@@ -1,6 +1,6 @@
 # agent-coordinator
 
-技术栈：**Turborepo + pnpm workspace** monorepo；API/worker 为 TypeScript 后端服务；Web 端 **Next.js + TypeScript**；iOS 端 **SwiftUI**。
+技术栈：**Turborepo + pnpm workspace** monorepo；API/worker 为 TypeScript 后端服务；Web 端 **Next.js 16.2 + TypeScript**（锁 `~16.2.x`，升大版本需走 coordinator 决策）；iOS 端 **SwiftUI**。
 
 ## 仓库布局
 
