@@ -1,0 +1,19 @@
+{
+  "name": "@agent-coordinator/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "node --watch dist/index.js"
+  },
+  "dependencies": {
+    "@agent-coordinator/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@agent-coordinator/typescript-config": "workspace:*",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

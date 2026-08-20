@@ -1,0 +1,4 @@
+{
+  "extends": "@agent-coordinator/typescript-config/node.json",
+  "include": ["src"]
+}
