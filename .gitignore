@@ -2,7 +2,8 @@
 node_modules/
 .pnpm-store/
 
-# 构建产物
+# 构建产物与缓存
+.turbo/
 .next/
 out/
 dist/

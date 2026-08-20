@@ -1,6 +1,19 @@
 # agent-coordinator
 
-技术栈：API/worker 为后端服务；Web 端 **Next.js + TypeScript**；iOS 端 **SwiftUI**。
+技术栈：**Turborepo + pnpm workspace** monorepo；API/worker 为 TypeScript 后端服务；Web 端 **Next.js 16.2 + TypeScript**（锁 `~16.2.x`，升大版本需走 coordinator 决策）；iOS 端 **SwiftUI**。
+
+## 仓库布局
+
+```
+apps/web      Next.js 前端            @agent-coordinator/web
+apps/api      HTTP API 服务           @agent-coordinator/api
+apps/worker   队列/后台任务            @agent-coordinator/worker
+apps/ios      SwiftUI App（xcodebuild 独立构建，不属于 pnpm workspace）
+packages/contracts          API 契约唯一来源（zod schema + 类型）
+packages/typescript-config  共享 tsconfig（base / node / nextjs）
+```
+
+常用命令（根目录）：`pnpm build` / `pnpm typecheck` / `pnpm test`（turbo 按依赖图执行并缓存，单包用 `--filter=@agent-coordinator/<name>`）；`pnpm check` / `pnpm check:fix`（biome 格式 + lint，仓库级）。提交经 husky 钩子跑 lint-staged 与 commitlint（Conventional Commits）。边界约束见 `.claude/rules/architecture.md`「Monorepo 边界」，操作 SOP 见 `monorepo` skill。
 
 ## 配置三层职责（新增内容放对位置）
 
@@ -60,6 +73,7 @@
 
 | 任务涉及 | Skill |
 |---|---|
+| monorepo 内新增代码/建包/依赖/任务 | `monorepo` |
 | Web 前端功能交付（契约→四态→交付） | `web-frontend` |
 | React 组件 / Next.js 机制（hooks、渲染、缓存、Server Actions） | `react-nextjs` |
 | iOS 功能交付（契约建模→五态→交付） | `ios-development` |

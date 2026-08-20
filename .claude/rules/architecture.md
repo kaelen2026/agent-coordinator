@@ -2,6 +2,13 @@
 
 所有实现与评审必须遵守。违反其中任何一条属于 reviewer 的 MAJOR 及以上 finding。
 
+## Monorepo 边界（Turborepo + pnpm workspace）
+
+- 仓库布局：`apps/*` 是可部署单元（web / api / worker / ios），`packages/*` 是共享库；操作方法见 `monorepo` skill。
+- 依赖方向单向：apps 只能依赖 packages；packages 之间可以依赖但不得成环；**禁止 packages 依赖 apps、禁止 app 之间互相 import**。
+- API 契约唯一来源是 `packages/contracts`（zod schema + 类型）：web/api/worker 直接 import，iOS 据此生成/手写 Codable 模型；契约类型在别处重复声明视为违规。
+- 内部包引用一律 `workspace:*`，禁止跨包 deep import 内部路径（只走包的 `exports` 入口）。
+
 ## 分层与依赖方向
 
 - 分层：`api（handler/router）→ service（业务逻辑）→ repository（数据访问）→ infra（DB/队列/外部客户端）`。
