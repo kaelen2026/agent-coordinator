@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支的新 push 取消上一次未跑完的 run，省 runner 也省等待
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: format + lint + commit message
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # commitlint 需要 PR 的完整提交范围，浅克隆拿不到 base
+          fetch-depth: 0
+
+      # 必须在 setup-node 之前：setup-node 的 pnpm 缓存依赖 pnpm 已安装
+      # 版本取 package.json 的 packageManager 字段，此处不重复声明
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # biome：格式 + lint + import 排序，只报不改；本地 --no-verify 绕过钩子的改动在这里兜住
+      - name: Biome check
+        run: pnpm check
+
+      # 走 turbo：typecheck/test 声明了 dependsOn ^build，
+      # 会先构建被依赖包（如 contracts 的 dist 类型），pnpm -r 做不到这一点
+      - name: Build
+        run: pnpm build
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Lint commit messages
+        if: github.event_name == 'pull_request'
+        run: >-
+          pnpm commitlint --verbose
+          --from ${{ github.event.pull_request.base.sha }}
+          --to ${{ github.event.pull_request.head.sha }}
+
+      # squash merge 后 PR 标题就是 main 上的 commit message，单独校验一次
+      # 标题经 env 传入，不拼进命令行（外部输入不进 shell）
+      - name: Lint PR title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s' "$PR_TITLE" | pnpm commitlint --verbose

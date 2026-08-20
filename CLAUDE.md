@@ -13,7 +13,7 @@ packages/contracts          API 契约唯一来源（zod schema + 类型）
 packages/typescript-config  共享 tsconfig（base / node / nextjs）
 ```
 
-常用命令（根目录）：`pnpm build` / `pnpm typecheck` / `pnpm test` / `pnpm lint`（turbo 按依赖图执行并缓存）；单包用 `--filter=@agent-coordinator/<name>`。边界约束见 `.claude/rules/architecture.md`「Monorepo 边界」，操作 SOP 见 `monorepo` skill。
+常用命令（根目录）：`pnpm build` / `pnpm typecheck` / `pnpm test`（turbo 按依赖图执行并缓存，单包用 `--filter=@agent-coordinator/<name>`）；`pnpm check` / `pnpm check:fix`（biome 格式 + lint，仓库级）。提交经 husky 钩子跑 lint-staged 与 commitlint（Conventional Commits）。边界约束见 `.claude/rules/architecture.md`「Monorepo 边界」，操作 SOP 见 `monorepo` skill。
 
 ## 配置三层职责（新增内容放对位置）
 
