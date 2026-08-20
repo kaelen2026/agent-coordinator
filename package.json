@@ -1,0 +1,30 @@
+{
+  "name": "agent-coordinator",
+  "version": "0.0.0",
+  "private": true,
+  "description": "多端协作项目（api/worker + web + ios）的仓库根：工具链与规范配置",
+  "packageManager": "pnpm@10.33.1",
+  "engines": {
+    "node": ">=22.22.1"
+  },
+  "scripts": {
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*": [
+      "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true --colors=off"
+    ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.9",
+    "@commitlint/cli": "21.2.2",
+    "@commitlint/config-conventional": "21.2.2",
+    "husky": "9.1.7",
+    "lint-staged": "17.3.0"
+  }
+}
