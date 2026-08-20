@@ -15,6 +15,14 @@
 - 依赖只能向下，不允许反向依赖或跨层跳跃（handler 不得直接操作数据库）。
 - 业务逻辑集中在 service 层：handler 只做参数解析/校验/序列化，repository 只做数据存取，不含业务判断。
 
+## API 单体模块化（apps/api，Hono）
+
+- `apps/api` 是单体模块化（modular monolith）：业务代码按领域组织在 `src/modules/<domain>/`，每个模块内部自带 routes/service/repo 分层；实现方法见 `hono-api` skill。
+- 每个模块只有一个公开入口 `index.ts`：跨模块与组装层（app.ts）只允许 import 该入口，禁止深入模块内部文件。
+- 跨模块协作只走对方公开的 service 接口，禁止直接访问对方的 repo 或表。
+- `src/shared/` 是最小共享内核（errors/db/logger）；`index.ts`（入口）与 `app.ts`(组装) 不含业务逻辑。
+- 业务错误统一抛 `AppError`（稳定 code），由全局 `onError` 映射为 `packages/contracts` 的错误格式；禁止在模块内自行拼错误响应。
+
 ## 模块边界
 
 - 模块间通过显式接口（函数签名 / interface / protocol）交互，不 import 对方内部实现。

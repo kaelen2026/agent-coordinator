@@ -1,20 +1,16 @@
-import { createServer } from "node:http";
-import { healthResponseSchema } from "@agent-coordinator/contracts";
+import { serve } from "@hono/node-server";
+import { createApp } from "./app.js";
 
-// 最小可运行骨架：真实框架选型走 coordinator 流程后替换。
 const port = Number(process.env.PORT ?? 3001);
 
-const server = createServer((req, res) => {
-  if (req.url === "/healthz") {
-    const body = healthResponseSchema.parse({ status: "ok" });
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(body));
-    return;
-  }
-  res.writeHead(404, { "content-type": "application/json" });
-  res.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "no such route", details: [] } }));
+const server = serve({ fetch: createApp().fetch, port }, (info) => {
+  console.log(JSON.stringify({ msg: "api listening", port: info.port }));
 });
 
-server.listen(port, () => {
-  console.log(JSON.stringify({ msg: "api listening", port }));
-});
+const shutdown = (signal: string) => {
+  console.log(JSON.stringify({ msg: "api shutting down", signal }));
+  server.close(() => process.exit(0));
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
