@@ -1,6 +1,6 @@
 import { type AuthUser, meResponseSchema } from "@agent-coordinator/contracts";
 import { type AuthFailure, classifyApiFailure, networkFailure } from "../auth/failure";
-import { API_BASE_URL } from "../env";
+import { getApiBaseUrl } from "../env";
 
 /**
  * 本仓库自有端点的请求层。组件不直接 fetch，一切响应在这里过契约 schema 之后
@@ -34,7 +34,7 @@ const readJsonBody = async (response: Response): Promise<unknown> => {
 export const fetchCurrentUser = async (signal?: AbortSignal): Promise<ApiResult<AuthUser>> => {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/api/me`, {
+    response = await fetch(`${getApiBaseUrl()}/api/me`, {
       method: "GET",
       credentials: "include",
       headers: { Accept: "application/json" },

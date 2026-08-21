@@ -1,5 +1,5 @@
 import { createAuthClient } from "better-auth/react";
-import { API_BASE_URL } from "../env";
+import { getApiBaseUrl } from "../env";
 
 /**
  * better-auth 官方客户端，全局唯一实例。
@@ -9,7 +9,7 @@ import { API_BASE_URL } from "../env";
  * 跨源请求必须带 cookie，所以 `credentials: "include"`（库默认如此，这里写明以免被改掉）。
  */
 export const authClient = createAuthClient({
-  baseURL: API_BASE_URL,
+  baseURL: getApiBaseUrl(),
   // 与 apps/api 的 AUTH_BASE_PATH 一致，是契约的一部分
   basePath: "/api/auth",
   fetchOptions: {

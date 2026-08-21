@@ -63,6 +63,11 @@ jobs:
 
       # 走 turbo：typecheck/test 声明了 dependsOn ^build，
       # 会先构建被依赖包（如 contracts 的 dist 类型），pnpm -r 做不到这一点
+      #
+      # 这里**故意不设** NEXT_PUBLIC_API_BASE_URL：CI 上没有仓库根 .env，正好用来保证
+      # "构建不依赖 .env"这条性质不退化（web 端曾因为在模块求值期校验它而让构建全红）。
+      # 缺变量时构建产物在浏览器里会立刻抛错，属于预期——CI 只验证能否构建，不产出可部署产物。
+      # 真要在 CI 里产出可部署产物，请在部署用的 workflow 里传真实值，不要往这里加。
       - name: Build
         run: pnpm build
 
