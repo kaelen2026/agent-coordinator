@@ -35,6 +35,9 @@ export const createApp = (deps: AppDeps) => {
       credentials: true,
       allowMethods: ["GET", "POST", "OPTIONS"],
       allowHeaders: ["Content-Type"],
+      // Retry-After 不在 CORS 安全清单里，不显式 expose 浏览器就读不到，
+      // 429 等于没告诉客户端该等多久。X-Retry-After 是 better-auth 自己用的名字。
+      exposeHeaders: ["Retry-After", "X-Retry-After"],
       maxAge: 600,
     }),
   );
@@ -50,7 +53,7 @@ export const createApp = (deps: AppDeps) => {
     rateLimitMiddleware({
       limiter: deps.rateLimiter,
       rule: deps.rateLimit,
-      isExempt: (path) => path === HEALTH_PATH,
+      isExempt: (route) => route === HEALTH_PATH,
     }),
   );
 

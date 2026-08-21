@@ -46,6 +46,17 @@ describe("resolveClientIp", () => {
     );
   });
 
+  it("groups_ipv6_clients_by_their_64_prefix_so_one_subscriber_cannot_rotate_addresses", () => {
+    // 一个 IPv6 用户通常手握整个 /64，按完整地址分桶等于让他随便换地址绕过限流。
+    // 这是 better-auth normalizeIP 的默认语义，这里固定住，免得升级时悄悄变掉。
+    expect(resolveClientIp(headers(), "2001:db8:1:2::1", [])).toBe(
+      resolveClientIp(headers(), "2001:db8:1:2::9999", []),
+    );
+    expect(resolveClientIp(headers(), "2001:db8:1:2::1", [])).not.toBe(
+      resolveClientIp(headers(), "2001:db8:1:3::1", []),
+    );
+  });
+
   it("maps_ipv4_mapped_ipv6_socket_addresses_to_plain_ipv4", () => {
     expect(resolveClientIp(headers(), "::ffff:203.0.113.7", [])).toBe("203.0.113.7");
   });

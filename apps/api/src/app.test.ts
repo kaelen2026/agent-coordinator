@@ -77,6 +77,17 @@ describe("app", () => {
     expect(res.headers.get("access-control-allow-credentials")).toBe("true");
   });
 
+  it("exposes_the_retry_after_headers_to_cross_origin_callers", async () => {
+    // Retry-After 不在 CORS 安全清单里，不显式 expose 的话浏览器读不到，
+    // 429 就等于没告诉客户端该等多久
+    const res = await makeApp().request("/healthz", { headers: { Origin: ALLOWED_ORIGIN } });
+    const exposed = (res.headers.get("access-control-expose-headers") ?? "")
+      .split(",")
+      .map((header) => header.trim().toLowerCase());
+    expect(exposed).toContain("retry-after");
+    expect(exposed).toContain("x-retry-after");
+  });
+
   it("does_not_echo_cors_headers_for_untrusted_origins", async () => {
     const res = await makeApp().request("/healthz", {
       headers: { Origin: "http://evil.example.com" },
@@ -109,21 +120,56 @@ describe("app", () => {
       expect(keys).toEqual([]);
     });
 
-    it("buckets_per_client_and_per_path", async () => {
+    it("buckets_per_client_and_per_matched_route", async () => {
       const { limiter, keys } = countingLimiter();
-      const app = makeApp({
-        rateLimiter: limiter,
-        trustedProxies: ["10.0.0.0/8"],
-      });
+      const app = makeApp({ rateLimiter: limiter, trustedProxies: ["10.0.0.0/8"] });
 
-      await app.request("/api/me", {
-        headers: { "X-Forwarded-For": "203.0.113.7, 10.0.0.1" },
-      });
-      await app.request("/healthz-not-exempt-path", {
+      await app.request("/api/me", { headers: { "X-Forwarded-For": "203.0.113.7, 10.0.0.1" } });
+      await app.request("/api/auth/sign-in/email", {
+        method: "POST",
         headers: { "X-Forwarded-For": "203.0.113.8, 10.0.0.1" },
       });
 
-      expect(keys).toEqual(["203.0.113.7|/api/me", "203.0.113.8|/healthz-not-exempt-path"]);
+      expect(keys).toEqual(["203.0.113.7|/api/me", "203.0.113.8|/api/auth/*"]);
+    });
+
+    it("collapses_every_unmatched_path_into_one_bucket_per_client", async () => {
+      // 键空间不能由攻击者控制：用原始路径分桶的话，每个 404 都会开一个新桶，
+      // 于是 404 洪水既限不住、又在限流表里无限堆行。
+      const { limiter, keys } = countingLimiter();
+      const app = makeApp({ rateLimiter: limiter, rateLimit: { windowSeconds: 60, max: 3 } });
+
+      const statuses: number[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        statuses.push((await app.request(`/no-such-route-${i}`)).status);
+      }
+
+      expect(new Set(keys).size).toBe(1);
+      expect(statuses).toEqual([404, 404, 404, 429, 429, 429]);
+    });
+
+    it("collapses_unknown_subpaths_of_a_wildcard_route_into_that_route_bucket", async () => {
+      // /api/auth/* 下的未知子路径同样不能各开各的桶，否则 better-auth 那张表也会被灌满
+      const { limiter, keys } = countingLimiter();
+      const app = makeApp({ rateLimiter: limiter, rateLimit: { windowSeconds: 60, max: 3 } });
+
+      const statuses: number[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        statuses.push((await app.request(`/api/auth/no-such-route-${i}`)).status);
+      }
+
+      expect(new Set(keys)).toEqual(new Set(["unknown|/api/auth/*"]));
+      expect(statuses.filter((status) => status === 429)).toHaveLength(2);
+    });
+
+    it("does_not_exempt_a_near_miss_of_the_health_path", async () => {
+      const { limiter, keys } = countingLimiter();
+      const app = makeApp({ rateLimiter: limiter });
+
+      await app.request("/healthz/");
+      await app.request("/healthz-not-exempt");
+
+      expect(keys).toHaveLength(2);
     });
 
     it("ignores_a_client_supplied_internal_ip_header_when_choosing_the_bucket", async () => {

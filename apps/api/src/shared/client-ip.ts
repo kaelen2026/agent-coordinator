@@ -1,3 +1,9 @@
+// 复用 better-auth 自己的 IP/CIDR 解析（`./utils/*` 是 @better-auth/core 声明的公开
+// 子路径导出），而不是手写这段安全敏感的解析。
+//
+// ⚠️ better-auth 把 @better-auth/core 锁成精确版本依赖，我们这里也锁精确版本：
+// 两者必须**同版本同步升级**，否则本文件与 better-auth 内部用的可能是两份语义不同的
+// 实现，而分桶行为不一致是不会报错的。升 better-auth 时记得一起升。
 import { getIPFromHeader, normalizeIP } from "@better-auth/core/utils/ip";
 import { createMiddleware } from "hono/factory";
 import { z } from "zod";
@@ -53,8 +59,11 @@ const nodeServerEnvSchema = z.object({
 
 /**
  * 信任边界：把真实客户端 IP 解析出来，写进内部头并**覆盖**客户端可能自带的同名头。
- * 下游（本服务限流、better-auth 限流）一律只认这个头，因此两处的分桶完全一致，
- * 也不存在"客户端自选限流桶"的口子。
+ * 下游（本服务限流、better-auth 限流）一律只认这个头，不存在"客户端自选限流桶"的口子。
+ *
+ * 唯一的例外是连 socket 地址都取不到、只能落到 UNKNOWN_CLIENT_IP 的防御分支：那不是
+ * 合法 IP，better-auth 会拒收并退回它自己的全局桶，两侧分桶在这条路径上并不一致。
+ * 真实 @hono/node-server 下 socket 地址总能取到，所以这条分支实际走不到。
  */
 export const clientIpMiddleware = (trustedProxies: string[]) =>
   createMiddleware<ClientIpEnv>(async (c, next) => {

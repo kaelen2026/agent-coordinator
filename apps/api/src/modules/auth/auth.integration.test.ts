@@ -9,6 +9,7 @@ import type { Pool } from "pg";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { type AppDeps, createApp } from "../../app.js";
+import { CLIENT_IP_HEADER } from "../../shared/client-ip.js";
 import { createDb, createPool, type Db } from "../../shared/db.js";
 import { type AppConfig, loadConfig } from "../../shared/env.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
@@ -54,12 +55,19 @@ const url = (path: string): string => `${config.auth.baseUrl}${path}`;
 // 浏览器一定会带 Origin，better-auth 的 CSRF 检查也依赖它——测试照着真实调用方发。
 const [browserOrigin = "http://localhost:3000"] = config.auth.trustedOrigins;
 
-type RequestOptions = { cookie?: string; origin?: string; forwardedFor?: string };
+type RequestOptions = {
+  cookie?: string;
+  origin?: string;
+  forwardedFor?: string;
+  /** 客户端伪造的内部 IP 头——信任边界必须无条件覆盖掉它。 */
+  forgedClientIp?: string;
+};
 
 const headersFor = (options: RequestOptions): Record<string, string> => ({
   Origin: options.origin ?? browserOrigin,
   ...(options.cookie === undefined ? {} : { Cookie: options.cookie }),
   ...(options.forwardedFor === undefined ? {} : { "X-Forwarded-For": options.forwardedFor }),
+  ...(options.forgedClientIp === undefined ? {} : { [CLIENT_IP_HEADER]: options.forgedClientIp }),
 });
 
 const post = async (
@@ -283,6 +291,36 @@ describe("rate limiting", () => {
     // 另一个客户端不受影响——这正是"全局共享桶"退化时会挂掉的断言
     const bystander = await signIn(email, "wrong-password", asClient("198.51.100.4"), behindProxy);
     expect(bystander.status).toBe(401);
+  });
+
+  it("cannot_escape_the_auth_rate_limit_by_forging_the_internal_client_ip_header", async () => {
+    // 信任边界那一行（无条件覆盖内部头）是整套分桶的地基。攻击者每次换一个伪造值，
+    // 如果它没被覆盖，better-auth 会给每个伪造值单开一个桶，暴力破解限流就完全失效。
+    const email = freshEmail();
+    await signUp(email);
+    await db.delete(rateLimit);
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      statuses.push(
+        (
+          await signIn(
+            email,
+            "wrong-password",
+            { ...asClient("203.0.113.50"), forgedClientIp: `198.51.100.${i + 1}` },
+            behindProxy,
+          )
+        ).status,
+      );
+    }
+
+    expect(statuses).toContain(429);
+
+    // better-auth 侧只应该看到一个桶——伪造值一个都不该变成桶
+    const signInBuckets = (await db.select().from(rateLimit))
+      .map((row) => row.key)
+      .filter((key) => key.endsWith("/sign-in/email"));
+    expect(signInBuckets).toEqual(["203.0.113.50|/sign-in/email"]);
   });
 
   it("keeps_the_auth_rate_limit_counters_in_the_database", async () => {
