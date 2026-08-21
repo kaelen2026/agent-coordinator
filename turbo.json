@@ -10,7 +10,18 @@
     },
     "lint": {},
     "test": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build"],
+      // 集成测试打真实数据库：turbo 默认不把环境变量透给任务，这里必须显式声明。
+      // DATABASE_URL 进 env（换库应当让缓存失效）；密钥类每次运行都不同，
+      // 放 passThroughEnv 只透传、不参与 hash，否则缓存永远命不中。
+      "env": ["DATABASE_URL"],
+      "passThroughEnv": [
+        "BETTER_AUTH_SECRET",
+        "BETTER_AUTH_URL",
+        "AUTH_TRUSTED_ORIGINS",
+        "AUTH_COOKIE_CROSS_SITE",
+        "AUTH_TRUSTED_PROXIES"
+      ]
     },
     "dev": {
       "cache": false,
