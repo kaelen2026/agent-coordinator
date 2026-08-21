@@ -86,3 +86,94 @@ export const betterAuthErrorSchema = z.object({
 });
 
 export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
+
+// ── 原生客户端的 bearer token 认证 ──────────────────────────────────────────────
+//
+// web 走 cookie，原生客户端（iOS）走 bearer token：登录/注册的成功响应把会话 token 放在
+// 一个响应头里，客户端存进 Keychain，之后每个请求用 `Authorization: Bearer <token>` 发回。
+// 服务端由 better-auth 官方 bearer plugin 提供（`apps/api/src/modules/auth/auth.ts`）。
+//
+// 下面每一条都是 `apps/api/src/modules/auth/auth.integration.test.ts` 逐个实测出来的，
+// 不是照文档抄的。客户端不可热修，所以这些行为在 api 侧都有测试钉住——better-auth 升级动了
+// 其中任何一条，CI 会先红。
+//
+// **1. token 从哪里取**
+//
+// | 端点                              | 成功响应带 `set-auth-token`？ |
+// |-----------------------------------|-------------------------------|
+// | `POST /api/auth/sign-up/email`    | 是                            |
+// | `POST /api/auth/sign-in/email`    | 是                            |
+// | `POST /api/auth/sign-out`         | 否（登出不下发新 token）      |
+//
+// 头名就是 `SESSION_TOKEN_HEADER`（HTTP 头名大小写不敏感，实际下发的是全小写）。
+//
+// **2. token 长什么样 —— 必须原样透传**
+//
+// 形状是 `<会话 id>.<HMAC 签名>`，签名是**标准** base64，会出现 `+`、`/` 和末尾的 `=`
+// 填充。形如 `XixGaueZNw95NdRyuccugjgQv8i7mXNu.JWMpR42ML44FnfjVvnyku8WrEf2R1Ku05vtuURed9AE=`。
+//
+// ⚠️ 存取过程中**不要做任何加工**：不要 URL 编解码、不要 trim、不要按 `.` 截断只留前半段。
+// 服务端开了 `requireSignature`，只接受带签名的完整 token——把签名去掉、只留裸的会话 id
+// 会被当成无效凭证（401）。这是有意的：裸 id 一旦从库/备份/日志漏出来就能冒充用户。
+//
+// **3. 怎么带、哪些端点接受**
+//
+// `Authorization: Bearer <token>`。接受范围：
+//   - `/api/auth/*` 的全部路由（含 `sign-out`）——bearer plugin 把它翻译成会话 cookie；
+//   - 本仓库自有的受保护端点（当前是 `GET /api/me`）——它走 better-auth 的 `getSession`，
+//     同一个 plugin 生效。
+// 同一个 token 在两类端点上通用，客户端不需要区分。
+//
+// **4. Origin 要求（原生客户端最容易踩的一条）**
+//
+// better-auth 的 origin/CSRF 校验只在下面两种情况下真正生效（实测；源码见
+// `api/middlewares/origin-check.mjs` 的 `useCookies` 分支）：
+//   a. 请求带了 `Cookie` 头 —— 这是 web 的情形，规则一点没变；
+//   b. 请求带了 `Origin`（或 `Referer` / `Sec-Fetch-*`）—— 此时 `sign-up` / `sign-in`
+//      会**强制**校验它在信任清单里。
+// 原生客户端两条都不沾（`URLSession` 默认不发 `Origin`，也不带 cookie），所以：
+//
+// | iOS 发的 Origin                      | sign-up / sign-in    | sign-out（bearer） | `GET /api/me` |
+// |--------------------------------------|----------------------|--------------------|---------------|
+// | 不发（URLSession 默认）              | 200                  | 200                | 200           |
+// | api 自己的源（=`BETTER_AUTH_URL`）   | 200                  | 200                | 200           |
+// | 自己编的（`http://evil.example.com`）| 403 `INVALID_ORIGIN` | 200                | 200           |
+//
+// ✅ **iOS 该发什么：固定发 `Origin: <api base URL 的源>`**（即 `BETTER_AUTH_URL` 的
+// scheme+host+port；客户端本来就知道 api 地址，`URLComponents` 取一下即可）。
+// 理由：better-auth 恒把 `baseURL` 的源放进 trustedOrigins（`getTrustedOrigins`——不用配、
+// 也不用往 `AUTH_TRUSTED_ORIGINS` 里加），所以这个值在"强制校验"和"不校验"两条分支下都通得
+// 过；而"什么都不发"只在"不校验"那条分支下成立，将来 better-auth 把校验改成无条件就会整体
+// 挂掉。两种都实测通过，但发 Origin 的那条更抗升级。
+//
+// ❌ 不要自己发明 origin（自定义 scheme 如 `agentcoordinator://` 也不要）：不在信任清单里
+// 就是 403 `INVALID_ORIGIN`，而把一个值加进 `AUTH_TRUSTED_ORIGINS` 会同时把它加进 CORS
+// 白名单，等于为了客户端放宽浏览器侧的信任边界。
+//
+// **5. bearer 相关的错误分支（实测）**
+//
+// | 场景                                                | status | body / code                              |
+// |-----------------------------------------------------|--------|------------------------------------------|
+// | `/api/me` token 无效/过期/伪造/格式错/裸 id         | 401    | `apiErrorSchema` `UNAUTHENTICATED`       |
+// | `/api/me` 完全不带凭证                              | 401    | `apiErrorSchema` `UNAUTHENTICATED`       |
+// | `sign-out` 带已失效的 token                         | 200    | 幂等成功，不下发新 token                 |
+// | `sign-up`/`sign-in` 发了不可信 Origin               | 403    | `betterAuthErrorSchema` `INVALID_ORIGIN` |
+//
+// ⚠️ 上表第一行和第二行的响应**逐字节相同**：服务端不告诉你 token 是"签名错"还是"会话没了"
+// 还是"根本没发"（`security.md`）。客户端拿到 401 的唯一正确反应是：清掉 Keychain 里的
+// token、回到登录态。不要试图从响应里区分原因，也不要据此重试。
+//
+// 其余错误分支（密码太短、重复邮箱、限流……）与 cookie 路径完全一致，见上面那张表。
+// **限流对 bearer 一视同仁**：`/api/auth/*` 由 better-auth 限（读 `X-Retry-After`），
+// `/api/me` 由本服务按 IP+路径限（读 `Retry-After`），带 token 不会豁免。
+//
+// **6. 为什么 web 不走这条路**
+//
+// `set-auth-token` 也会出现在 web 的登录响应上，但它**不在** CORS 的
+// `Access-Control-Expose-Headers` 里，`Authorization` 也不在 `Access-Control-Allow-Headers`
+// 里——跨源的浏览器 JS 既读不到这个头、也发不出 bearer。这是刻意的：web 的会话只存在
+// httpOnly cookie 里，XSS 拿不到可直接复用的 token。web 端不要改用 bearer。
+export const SESSION_TOKEN_HEADER = "set-auth-token";
+
+/** 按契约拼出 `Authorization` 头的值。token 原样带上，不做任何编码。 */
+export const bearerAuthorization = (token: string): string => `Bearer ${token}`;

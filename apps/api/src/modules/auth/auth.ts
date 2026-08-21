@@ -1,5 +1,6 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { bearer } from "better-auth/plugins/bearer";
 import { CLIENT_IP_HEADER } from "../../shared/client-ip.js";
 import type { Db } from "../../shared/db.js";
 import { createAuthLogger } from "./logger.js";
@@ -51,6 +52,15 @@ export const createAuth = (db: Db, config: AuthConfig) =>
     },
     // 限流计数落库：进程无状态，多实例共享同一份计数
     rateLimit: { enabled: true, storage: "database" },
+    // 原生客户端（iOS）的凭证形态：会话 token 从 `set-auth-token` 响应头取，
+    // 之后按 `Authorization: Bearer <token>` 发回。cookie 路径完全不受影响——
+    // 插件只在请求带 Authorization 头时才介入。
+    //
+    // requireSignature 必须显式开：默认 false 时插件会**自己给没签名的 token 补上签名**，
+    // 于是光有一个裸的会话 id（session.token 那一列的值）就能冒充用户——数据库只读权限、
+    // 一次备份、一行日志都够了。我们下发的 token 一律带签名，所以开它不损失任何功能。
+    // 行为由集成测试 "rejects_a_bare_session_id_that_carries_no_signature" 钉住。
+    plugins: [bearer({ requireSignature: true })],
     advanced: {
       // 必须显式写死 false：不写的话 better-auth 在 NODE_ENV=test 下会**整体关掉**
       // origin/CSRF 校验（create-context.mjs 的 skipOriginCheck），
