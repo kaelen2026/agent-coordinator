@@ -16,7 +16,9 @@ description: 编写后端测试与 QA 验收时使用：从选测试层级、造
 | API endpoint | 集成 | HTTP client 打真实路由 |
 | 关键用户旅程 | 端到端 | 完整启动的服务，只留冒烟路径 |
 
-金字塔形：单元最多，端到端最少（超过 10 个先质疑该不该下沉）。
+金字塔形：单元最多，端到端最少（超过 10 个先质疑该不该下沉）。本表是全项目测试分层的唯一定义（`rules/testing.md` 引用于此）。
+
+本地真库/真队列用仓库基建：`pnpm infra:up` 起 PostgreSQL + Redis（compose.yaml，`--wait` 阻塞到健康）；QA 模拟依赖故障用 `docker compose stop postgres`（测完 `start` 恢复）。
 
 ## 步骤 2：准备测试数据
 
