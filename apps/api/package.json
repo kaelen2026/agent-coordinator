@@ -4,16 +4,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "dev": "node --watch dist/index.js"
+    "test": "vitest run",
+    "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@agent-coordinator/contracts": "workspace:*"
+    "@agent-coordinator/contracts": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.6.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "@agent-coordinator/typescript-config": "workspace:*",
     "@types/node": "^22.10.0",
-    "typescript": "^5.7.0"
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }

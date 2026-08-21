@@ -1,12 +1,12 @@
 # agent-coordinator
 
-技术栈：**Turborepo + pnpm workspace** monorepo；API/worker 为 TypeScript 后端服务；Web 端 **Next.js 16.2 + TypeScript**（锁 `~16.2.x`，升大版本需走 coordinator 决策）；iOS 端 **SwiftUI**。
+技术栈：**Turborepo + pnpm workspace** monorepo；API 为 **Hono.js + 单体模块化**（modular monolith，模块边界见 architecture 规则）；worker 为 TypeScript 后台服务；Web 端 **Next.js 16.2 + TypeScript**（锁 `~16.2.x`，升大版本需走 coordinator 决策）；iOS 端 **SwiftUI**。
 
 ## 仓库布局
 
 ```
 apps/web      Next.js 前端            @agent-coordinator/web
-apps/api      HTTP API 服务           @agent-coordinator/api
+apps/api      HTTP API（Hono 单体模块化）@agent-coordinator/api
 apps/worker   队列/后台任务            @agent-coordinator/worker
 apps/ios      SwiftUI App（xcodebuild 独立构建，不属于 pnpm workspace）
 packages/contracts          API 契约唯一来源（zod schema + 类型）
@@ -78,7 +78,8 @@ packages/typescript-config  共享 tsconfig（base / node / nextjs）
 | React 组件 / Next.js 机制（hooks、渲染、缓存、Server Actions） | `react-nextjs` |
 | iOS 功能交付（契约建模→五态→交付） | `ios-development` |
 | SwiftUI 视图 / 框架机制（状态、渲染、导航、并发） | `swiftui` |
-| HTTP API 设计/修改 | `api-design` |
+| HTTP API 设计/修改（契约） | `api-design` |
+| API 接口实现（Hono 模块、路由、错误处理） | `hono-api` |
 | 建表/迁移/索引 | `database-design` |
 | 异步任务/重试/调度 | `job-queue` |
 | 跨服务/一致性/幂等/锁 | `distributed-systems` |
