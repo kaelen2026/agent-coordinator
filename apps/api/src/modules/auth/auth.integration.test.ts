@@ -394,9 +394,63 @@ describe("rate limiting", () => {
   });
 });
 
-describe("dependency failure", () => {
-  const CONSOLE_LEVELS = ["error", "warn", "log", "info", "debug", "trace"] as const;
+const CONSOLE_LEVELS = ["error", "warn", "log", "info", "debug", "trace"] as const;
 
+/**
+ * 在防护生效的前提下收集所有 console 输出。
+ * 防护装在 spy **外面**（库 → 防护 → 出口），与生产里的层次一致；
+ * 被测的 app 在防护装好之后才构造——better-auth 的 logger sink 是构造时就绑定的，
+ * 生产里 index.ts 也是先装防护再造依赖。
+ */
+const captureConsole = async (
+  act: (target: ReturnType<typeof makeApp>) => Promise<void>,
+): Promise<string[]> => {
+  const captured: string[] = [];
+  const record = (...args: unknown[]): void => {
+    captured.push(
+      args.map((arg) => (typeof arg === "string" ? arg : (JSON.stringify(arg) ?? ""))).join(" "),
+    );
+  };
+  const spies = CONSOLE_LEVELS.map((level) => vi.spyOn(console, level).mockImplementation(record));
+  const restoreGuard = installConsoleRedaction();
+  try {
+    await act(makeApp({ auth: createAuth(db, config.auth) }));
+  } finally {
+    restoreGuard();
+    for (const spy of spies) {
+      spy.mockRestore();
+    }
+  }
+  return captured;
+};
+
+describe("logging on normal business paths", () => {
+  it("keeps the email out of the log when an existing address is registered again", async () => {
+    // better-auth 在这条路径上会 `logger.info(\`Sign-up attempt for existing email: ${email}\`)`
+    // （sign-up.mjs），走的是我们配置的 logger，靠 level:"warn" 抑制。
+    // 这是**正常业务路径**——任何用户重复注册都会走到，一旦 level 被调成 "info"，
+    // 完整邮箱就会稳定、高频地进日志。所以钉住行为而不是配置值。
+    const email = freshEmail();
+    expect((await signUp(email)).status).toBe(200);
+
+    let status = 0;
+    const captured = await captureConsole(async (target) => {
+      const res = await post(
+        "/api/auth/sign-up/email",
+        { name: "Dup", email, password: PASSWORD },
+        {},
+        target,
+      );
+      status = res.status;
+    });
+
+    // 422 证明确实走到了"邮箱已存在"这条分支，不是因为没跑到而假绿
+    expect(status).toBe(422);
+    expect(captured.join("\n")).not.toContain(email);
+  });
+});
+
+describe("dependency failure", () => {
   /**
    * 把某张表改名，制造"只有依赖这张表的查询失败"的干净故障。
    * 三条路径都要覆盖：session 上的错误被 better-auth 包成 APIError 走 onError，
@@ -441,34 +495,6 @@ describe("dependency failure", () => {
       { label: "password", value: PASSWORD },
       { label: "password hash", value: hash },
     ];
-  };
-
-  /**
-   * 在防护生效的前提下收集所有 console 输出。
-   * 防护装在 spy **外面**（库 → 防护 → 出口），与生产里的层次一致；
-   * 被测的 app 在防护装好之后才构造——better-auth 的 logger sink 是构造时就绑定的，
-   * 生产里 index.ts 也是先装防护再造依赖。
-   */
-  const captureConsole = async (act: (target: ReturnType<typeof makeApp>) => Promise<void>) => {
-    const captured: string[] = [];
-    const record = (...args: unknown[]): void => {
-      captured.push(
-        args.map((arg) => (typeof arg === "string" ? arg : (JSON.stringify(arg) ?? ""))).join(" "),
-      );
-    };
-    const spies = CONSOLE_LEVELS.map((level) =>
-      vi.spyOn(console, level).mockImplementation(record),
-    );
-    const restoreGuard = installConsoleRedaction();
-    try {
-      await act(makeApp({ auth: createAuth(db, config.auth) }));
-    } finally {
-      restoreGuard();
-      for (const spy of spies) {
-        spy.mockRestore();
-      }
-    }
-    return captured;
   };
 
   it.each([

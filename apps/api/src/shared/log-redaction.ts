@@ -20,8 +20,15 @@
  * @hono/node-server / drizzle-orm / hono），拼进字符串的只有静态文案、合成的调用栈、
  * 以及 provider id / JSON key 这类非凭证标识；唯一会把查询参数拼成字符串打出来的是
  * adapter 的 debugLogs，已在 `modules/auth/auth.ts` 显式关闭。
- * （adapter 的 debugLogs 实测当前版本不打凭证，但形态是字符串、防护拦不住，故显式关闭。）
- * 升级这些依赖时应重跑一次该审计。
+ * 审计时还发现一件事，**启用新功能前必须复查**：`@better-auth/core` 里除了 app 配置的
+ * logger，还有一个模块级单例 `const logger = createLogger()`（`dist/env/logger.mjs`），
+ * core 内部广泛使用它，`betterAuth({ logger })` 管不到、也改不了它的 level。本切片够不到
+ * 它上面含凭证的消息，但 `dist/oauth2/*` 与 `dist/social-providers/*` 里有一批
+ * `logger.error(\`... ${e.message}\`)` 走的正是这个单例——**做社交登录 / OAuth 时会绕过
+ * app 的 logger 配置**，届时要重新评估（它最终仍会落到 console，所以本模块的防护还在，
+ * 但字符串形态的消息拦不住）。
+ *
+ * 升级这些依赖、或启用新功能时，应重跑一次该审计。
  */
 
 const MAX_CAUSE_DEPTH = 5;

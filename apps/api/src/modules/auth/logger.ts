@@ -24,7 +24,12 @@ export type AuthLogSink = (line: string) => void;
  */
 export const createAuthLogger = (sink: AuthLogSink = console.error) => ({
   disabled: false,
-  // better-auth 默认只发 warn 以上；显式写出来，免得升级时默认值变了
+  // **这同时是一条安全边界，不只是噪音控制。**
+  // better-auth 在重复注册时会 `logger.info("Sign-up attempt for existing email: <邮箱>")`
+  // （sign-up.mjs），那是唯一一条把凭证拼进 message 的库消息，且发生在**正常业务路径**上——
+  // 把 level 调成 "info" 会让完整邮箱稳定、高频地进日志（security.md 禁列）。
+  // 要调低门槛排障，先想清楚这条。行为由 auth.integration.test.ts 的
+  // "keeps the email out of the log when an existing address is registered again" 钉住。
   level: "warn" as const,
   log: (level: AuthLogLevel, message: string, ...args: unknown[]): void => {
     sink(
