@@ -1,11 +1,22 @@
 ---
 name: web-frontend
-description: 实现 Web 前端功能（Next.js + TypeScript）时使用：从契约到类型与 schema、server/client 边界规划、请求层、四态页面、测试交付的完整 SOP。触发词：前端、页面、组件、Next.js、React、TypeScript、web。
+description: 实现 Web 前端功能（Next.js + TypeScript + Tailwind v4 + shadcn/ui）时使用：从契约到类型与 schema、server/client 边界规划、请求层、四态页面与样式、测试交付的完整 SOP。触发词：前端、页面、组件、Next.js、React、TypeScript、Tailwind、shadcn、web。
 ---
 
-# Web 前端 SOP（Next.js + TypeScript）
+# Web 前端 SOP（Next.js + TypeScript + Tailwind v4 + shadcn/ui）
 
 硬性约束见 `.claude/rules/typescript.md`；组件编写、hooks、重渲染、缓存与 Server Actions 的具体方法见 `react-nextjs` skill。**输入**：DoD + 已冻结的 API 契约。**输出**：四态齐全、通过 build/tsc/lint/测试的前端实现。
+
+**目录形态**（apps/web，src 结构）：
+
+```
+src/
+  app/          路由段：layout / page / error.tsx / loading.tsx
+  components/   业务组件（按功能组织）
+    ui/         shadcn/ui 生成的原子组件——只经 CLI 添加，改样式不改语义
+  lib/          工具与共享逻辑（cn、api client、schema）
+components.json shadcn 配置；globals.css 是 Tailwind v4 的 @theme 主题源
+```
 
 ## 步骤 1：从契约生成类型与 schema
 
@@ -38,6 +49,13 @@ description: 实现 Web 前端功能（Next.js + TypeScript）时使用：从契
 4. 未登录/无权限（跳转或提示，不裸露数据结构）。
 
 404/重定向用 `notFound()`/`redirect()` 框架原语。前端表单校验只为体验，安全以后端为准。
+
+**样式与组件库（Tailwind v4 + shadcn/ui）**：
+
+- 通用 UI 元素（按钮、表单、弹层、表格）先查 shadcn/ui：`pnpm dlx shadcn@latest add <component>` 添加进 `src/components/ui/`，不手写平行实现；业务组件组合 ui/ 原子而不是复制其内部。
+- `ui/` 内的文件视为受管代码：可调 className/变体，不改组件语义与 API；深度定制时另建业务组件包装。
+- Tailwind v4 是 CSS-first 配置：设计 token（颜色/圆角/间距）定义在 `globals.css` 的 `@theme`，组件里用语义 token 类（`bg-primary`），不散写字面量色值；无 `tailwind.config`，不要凭旧记忆创建。
+- 类名条件拼接一律 `cn()`（`src/lib/utils.ts`）；组件变体用 cva 建模，不用布尔 props 堆砌样式分支。
 
 ## 步骤 5：测试
 

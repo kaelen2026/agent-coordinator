@@ -1,6 +1,6 @@
 # agent-coordinator
 
-技术栈：**Turborepo + pnpm workspace** monorepo；API 为 **Hono.js + 单体模块化**（modular monolith，模块边界见 architecture 规则）；worker 为 TypeScript 后台服务；Web 端 **Next.js 16.2 + TypeScript**（锁 `~16.2.x`，升大版本需走 coordinator 决策）；iOS 端 **SwiftUI**。
+技术栈：**Turborepo + pnpm workspace** monorepo；API 为 **Hono.js + 单体模块化**（modular monolith，模块边界见 architecture 规则）；数据库访问 **Drizzle ORM + drizzle-kit 迁移**（PostgreSQL 17）；worker 为 TypeScript 后台服务（Redis 队列）；Web 端 **Next.js 16.2 + TypeScript + Tailwind v4 + shadcn/ui**（Next 锁 `~16.2.x`，升大版本需走 coordinator 决策）；iOS 端 **SwiftUI**。
 
 ## 仓库布局
 
@@ -43,7 +43,7 @@ packages/typescript-config  共享 tsconfig（base / node / nextjs）
      → 全部切片合入 → 汇总交付
 ```
 
-**跨端任务**：切片按行为切、不按端切；契约先行——API 契约冻结后各端并行开发，每端独立 PR 独立评审；api/worker 先合入，客户端可用契约 mock 顶进度，但 qa 联调验收必须打真实 API。契约中途要改必须回 coordinator 重新广播，禁止单端私改。
+**跨端任务**：切片按行为切、不按端切；契约先行——冻结后各端并行、每端独立 PR。推进顺序、mock 策略与契约变更流程以 `coordinator.md`「跨端任务的拆分方式」为准。
 
 **大需求必须垂直拆分**：每个切片是一条端到端可运行的行为路径，对应一个独立 PR；每个 PR 合入后系统完整可运行、全量测试绿、切片行为可用真实请求验证。禁止按层横切（先建全部表、再写全部 service）——那样中间提交无法验证。切片粒度与验收标准见 `.claude/agents/coordinator.md`。
 
@@ -51,7 +51,7 @@ packages/typescript-config  共享 tsconfig（base / node / nextjs）
 
 1. **任何多步骤的功能需求或修改**都走上述流程：实现派给 `backend-engineer`，实现完成后必须派 `reviewer` 评审，评审通过后必须派 `qa` 验收，三步不可跳过。
 2. 分派每个子任务时附带：文件范围、完成标准（DoD）、需要遵守的规则文件与 skill。
-3. reviewer 的 BLOCKER/MAJOR finding 与 qa 的 FAIL 都要返工：把 finding 原文转给 `backend-engineer`，返工最多 3 轮，仍不通过则停下向用户汇报分歧。
+3. reviewer 的 BLOCKER/MAJOR finding 与 qa 的 FAIL 都要返工：把 finding 原文转给实现端 agent（等级语义见 `.claude/rules/severity.md`；返工轮数上限等流程参数以 `coordinator.md` 为准）。
 4. 无依赖的子任务并行分派；有依赖的按顺序推进。
 5. 最终用一段汇总收尾：完成了什么、评审/QA 结论、遗留风险。
 
@@ -67,7 +67,8 @@ packages/typescript-config  共享 tsconfig（base / node / nextjs）
 - `.claude/rules/security.md` — 安全红线，违反即 BLOCKER
 - `.claude/rules/typescript.md` — Web 端类型纪律、契约同源、运行时校验、Next.js 敏感信息
 - `.claude/rules/swift.md` — iOS 端 SwiftUI-only、并发模型、向前兼容、敏感信息
-- `.claude/rules/git.md` — 禁止直接提交 main（必须走 PR）；每个任务用 worktree 在项目同级目录开工
+- `.claude/rules/git.md` — 禁止直接提交 main（必须走 PR + Conventional Commits）；每个任务用 worktree 在项目同级目录开工
+- `.claude/rules/severity.md` — finding 等级（BLOCKER/MAJOR/MINOR）的统一语义与处置
 
 ## 领域 skills
 
@@ -82,7 +83,7 @@ packages/typescript-config  共享 tsconfig（base / node / nextjs）
 | SwiftUI 视图 / 框架机制（状态、渲染、导航、并发） | `swiftui` |
 | HTTP API 设计/修改（契约） | `api-design` |
 | API 接口实现（Hono 模块、路由、错误处理） | `hono-api` |
-| 建表/迁移/索引 | `database-design` |
+| 建表/迁移/索引（Drizzle 落地） | `database-design` |
 | 异步任务/重试/调度 | `job-queue` |
 | 跨服务/一致性/幂等/锁 | `distributed-systems` |
 | 超时/限流/降级/可观测性 | `reliability-engineering` |
