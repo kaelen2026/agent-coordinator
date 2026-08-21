@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { fetchCurrentUser } from "@/lib/api/me";
 import type { AuthFailure } from "@/lib/auth/failure";
 import { authFailureMessage } from "@/lib/auth/messages";
@@ -85,23 +86,31 @@ export function CurrentUserCard() {
     );
   }
 
+  // 排版对齐 DESIGN.md 第 3 节：中文标签 sans 12px 弱化色；数据值（邮箱/时间）mono 13px + tabular-nums
   return (
     <dl className="grid gap-3 text-sm">
-      <div className="grid gap-0.5">
-        <dt className="text-muted-foreground">姓名</dt>
+      <div className="grid gap-1">
+        <dt className="text-muted-foreground text-xs">姓名</dt>
         <dd className="font-medium">{state.user.name}</dd>
       </div>
-      <div className="grid gap-0.5">
-        <dt className="text-muted-foreground">邮箱</dt>
-        <dd className="font-medium">{state.user.email}</dd>
+      <div className="grid gap-1">
+        <dt className="text-muted-foreground text-xs">邮箱</dt>
+        <dd className="break-all font-mono text-[13px] leading-normal tabular-nums">
+          {state.user.email}
+        </dd>
       </div>
-      <div className="grid gap-0.5">
-        <dt className="text-muted-foreground">邮箱验证</dt>
-        <dd className="font-medium">{state.user.emailVerified ? "已验证" : "未验证"}</dd>
+      <div className="grid gap-1">
+        <dt className="text-muted-foreground text-xs">邮箱验证</dt>
+        <dd>
+          <StatusBadge
+            status={state.user.emailVerified ? "succeeded" : "blocked"}
+            label={state.user.emailVerified ? "已验证" : "未验证"}
+          />
+        </dd>
       </div>
-      <div className="grid gap-0.5">
-        <dt className="text-muted-foreground">注册时间</dt>
-        <dd className="font-medium">
+      <div className="grid gap-1">
+        <dt className="text-muted-foreground text-xs">注册时间</dt>
+        <dd className="font-mono text-[13px] leading-normal tabular-nums">
           <time dateTime={state.user.createdAt}>{formatDateTime(state.user.createdAt)}</time>
         </dd>
       </div>
