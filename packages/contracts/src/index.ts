@@ -139,12 +139,26 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // | api 自己的源（=`BETTER_AUTH_URL`）   | 200                  | 200                | 200           |
 // | 自己编的（`http://evil.example.com`）| 403 `INVALID_ORIGIN` | 200                | 200           |
 //
+// 9 格逐格由 `auth.integration.test.ts` 断言钉住（"不发"与"不可信"两行在
+// `origin requirements for native clients` 里，"api 自己的源"那一行由 bearer 各测试用 `NATIVE`
+// 覆盖）：better-auth 把 origin 校验改成无条件时，CI 会先红，而不是 CI 全绿、契约变成错的。
+//
 // ✅ **iOS 该发什么：固定发 `Origin: <api base URL 的源>`**（即 `BETTER_AUTH_URL` 的
 // scheme+host+port；客户端本来就知道 api 地址，`URLComponents` 取一下即可）。
 // 理由：better-auth 恒把 `baseURL` 的源放进 trustedOrigins（`getTrustedOrigins`——不用配、
 // 也不用往 `AUTH_TRUSTED_ORIGINS` 里加），所以这个值在"强制校验"和"不校验"两条分支下都通得
 // 过；而"什么都不发"只在"不校验"那条分支下成立，将来 better-auth 把校验改成无条件就会整体
 // 挂掉。两种都实测通过，但发 Origin 的那条更抗升级。
+//
+// ⚠️ **这条建议带一个部署耦合，必须显式满足**：矩阵第二行成立的前提是"客户端配的 api 基址的源"
+// 与"服务端 `BETTER_AUTH_URL` 的源"**逐字相同**（scheme、host、端口，别名/CDN 域名都算不同）。
+// 两者不同源的部署很常见（iOS 走 `https://api-mobile.example.com`，而 `BETTER_AUTH_URL` 是
+// `https://api.example.com`）：这时 iOS 发出的 Origin 会走 `formCsrfMiddleware` 的强制分支、
+// 又不在信任清单里 → 该环境下 `sign-up` / `sign-in` 直接 403。客户端不可热修，只能靠服务端救。
+// 所以约束是：**iOS 发的 Origin 必须与服务端 `BETTER_AUTH_URL` 的源逐字相同；做不到就必须把
+// iOS 实际发出的那个源加进 `AUTH_TRUSTED_ORIGINS`**（注意那个清单同时是 CORS 白名单，加进去
+// 等于浏览器侧多一个可信源，要在评审里权衡）。任何新环境上线前，用类生产配置实测一次
+// `sign-in` 不是 403。
 //
 // ❌ 不要自己发明 origin（自定义 scheme 如 `agentcoordinator://` 也不要）：不在信任清单里
 // 就是 403 `INVALID_ORIGIN`，而把一个值加进 `AUTH_TRUSTED_ORIGINS` 会同时把它加进 CORS
@@ -169,10 +183,20 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 //
 // **6. 为什么 web 不走这条路**
 //
-// `set-auth-token` 也会出现在 web 的登录响应上，但它**不在** CORS 的
-// `Access-Control-Expose-Headers` 里，`Authorization` 也不在 `Access-Control-Allow-Headers`
-// 里——跨源的浏览器 JS 既读不到这个头、也发不出 bearer。这是刻意的：web 的会话只存在
-// httpOnly cookie 里，XSS 拿不到可直接复用的 token。web 端不要改用 bearer。
+// `set-auth-token` 会出现在**每个**建立会话的响应上，web 的登录响应也有（bearer plugin 的
+// after hook 无条件执行）。但它**不在** CORS 的 `Access-Control-Expose-Headers` 里，
+// `Authorization` 也不在 `Access-Control-Allow-Headers` 里——跨源的浏览器 JS 既读不到这个头、
+// 也发不出 bearer。这是刻意的：web 的会话只存在 httpOnly cookie 里，XSS 拿不到可直接复用的
+// token。web 端不要改用 bearer。
+//
+// ⚠️ 这个结论有两个前提，别当成无条件成立：
+//   a. **web 与 api 跨源**（当前部署如此：web 在 `:3000`，api 在 `:3001`）。若把 api 反代到与
+//      web 同一个源（同域同端口），CORS 整体不生效，同源的浏览器 JS 可以直接读
+//      `set-auth-token`——那种部署下"XSS 拿不到可复用 token"这条保障就没了，需要另做加固
+//      （例如在没有 `Authorization` 请求头的响应上剥掉该头）。
+//   b. api 的 CORS `exposeHeaders` 清单**保持非空**：插件自己会把 `set-auth-token` 写进
+//      `Access-Control-Expose-Headers`，压住它靠的是 hono cors 用非空清单覆盖该头
+//      （见 `apps/api/src/app.ts` 的注释）。清单变空，插件的值就透出去了。
 export const SESSION_TOKEN_HEADER = "set-auth-token";
 
 /** 按契约拼出 `Authorization` 头的值。token 原样带上，不做任何编码。 */

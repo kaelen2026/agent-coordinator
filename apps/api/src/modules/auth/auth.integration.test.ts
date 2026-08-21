@@ -474,7 +474,9 @@ describe("origin requirements for native clients", () => {
   // 原生 URLSession 默认一个 Origin 头都不发。better-auth 的 origin/CSRF 校验只在请求
   // **带 Cookie 头**时才强制（origin-check.mjs 的 `useCookies`），或者在请求已经带了
   // Origin/Referer/Sec-Fetch-* 时强制（sign-in/sign-up 的 formCsrfMiddleware）。
-  // 这三条是 iOS 契约的地基，逐条钉住——升级 better-auth 时它们变了必须让 CI 先红。
+  // 这是 iOS 契约的地基：契约里那张 3×3 的 Origin 矩阵，本块逐格钉住（"不发 Origin" 与
+  // "不可信 Origin" 两行，共 6 格；"api 自己的源"那一行由上面 bearer 各测试用 NATIVE 覆盖）——
+  // 升级 better-auth 时任何一格变了必须让 CI 先红，而不是等 iOS 上线挂掉。
   const noOrigin: RequestOptions = { origin: null };
 
   it("accepts_sign_up_from_a_client_that_sends_no_origin_and_no_cookie", async () => {
@@ -530,6 +532,37 @@ describe("origin requirements for native clients", () => {
         .from(user)
         .where(inArray(user.email, [email])),
     ).toHaveLength(0);
+  });
+
+  it("does_not_check_origin_on_bearer_sign_out_even_when_the_origin_is_untrusted", async () => {
+    // 契约 Origin 矩阵第三行第二格。今天成立的原因是：强制校验只发生在 sign-up/sign-in
+    // （formCsrfMiddleware）或请求带 Cookie 时，bearer 的 sign-out 两条都不沾。
+    // better-auth 一旦把校验改成无条件，这一格会先红——契约的立论就是每格都有测试钉住。
+    const token = tokenFrom(await signUp(freshEmail(), PASSWORD, NATIVE));
+    // 先确认 token 本来好用：少了这一步，"200 + 之后 401"在 bearer 完全没生效时也成立
+    expect((await get("/api/me", { ...NATIVE, bearer: token })).status).toBe(200);
+
+    const out = await post(
+      "/api/auth/sign-out",
+      {},
+      { origin: "http://evil.example.com", bearer: token },
+    );
+
+    // 200 且会话真的被吊销——不是"被挡掉但幂等成功"
+    expect(out.status).toBe(200);
+    expect((await get("/api/me", { ...NATIVE, bearer: token })).status).toBe(401);
+  });
+
+  it("does_not_check_origin_on_our_own_protected_endpoint_even_when_the_origin_is_untrusted", async () => {
+    // 契约 Origin 矩阵第三行第三格。/api/me 是本仓库自有路由，不经过 better-auth 的
+    // origin 校验；跨源浏览器 JS 依然读不到响应（CORS 不回 allow-origin，app.test.ts 钉住）。
+    const email = freshEmail();
+    const token = tokenFrom(await signUp(email, PASSWORD, NATIVE));
+
+    const res = await get("/api/me", { origin: "http://evil.example.com", bearer: token });
+
+    expect(res.status).toBe(200);
+    expect(meResponseSchema.parse(await res.json()).user.email).toBe(email);
   });
 
   it("still_requires_a_trusted_origin_once_the_request_carries_a_cookie", async () => {
@@ -633,6 +666,10 @@ describe("rate limiting", () => {
       throw new Error("expected better-auth to rate limit within 6 attempts");
     }
     expect(limited.headers.get("content-type")).toMatch(/text\/plain/);
+    // 契约让客户端在 /api/auth/* 上读 X-Retry-After（自有端点是 Retry-After，名字不同）。
+    // 这条不对称此前没有任何断言：better-auth 改名的话 api 测试照绿，而 web 的限流倒计时会
+    // 静默退回默认值、iOS 按契约读的头永远为空。
+    expect(limited.headers.get("x-retry-after") ?? "").toMatch(/^\d+$/);
     // 头说 text/plain，body 其实是 JSON——按 content-type 解析的客户端会拿到字符串
     expect(betterAuthErrorSchema.parse(JSON.parse(await limited.text())).code).toBeUndefined();
   });

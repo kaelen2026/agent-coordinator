@@ -53,8 +53,19 @@ export const createAuth = (db: Db, config: AuthConfig) =>
     // 限流计数落库：进程无状态，多实例共享同一份计数
     rateLimit: { enabled: true, storage: "database" },
     // 原生客户端（iOS）的凭证形态：会话 token 从 `set-auth-token` 响应头取，
-    // 之后按 `Authorization: Bearer <token>` 发回。cookie 路径完全不受影响——
-    // 插件只在请求带 Authorization 头时才介入。
+    // 之后按 `Authorization: Bearer <token>` 发回。
+    //
+    // 插件的两个 hook 生效条件**不同**，别记成"只对带 Authorization 的请求生效"：
+    //   - before hook 有条件（matcher 看请求有没有 `Authorization` 头）：命中时把 bearer token
+    //     翻译成会话 cookie 塞进请求头。cookie 路径的**认证语义**因此完全没变。
+    //   - after hook 无条件（`matcher() { return true; }`）：**每个**带会话 set-cookie 的响应
+    //     都会被追加 `set-auth-token` 与 `Access-Control-Expose-Headers`——web 源
+    //     （Origin: http://localhost:3000）的 sign-up 响应实测也带 `set-auth-token`。
+    //     所以 cookie 路径不是"零变化"，而是"认证语义不变、响应多一个头"。
+    //     跨源浏览器 JS 读不到那个头，靠的是 app.ts 的 CORS expose 清单把它盖掉（见那里的注释），
+    //     由 auth.integration.test.ts 的
+    //     does_not_expose_the_token_header_to_cross_origin_browser_javascript 钉住——
+    //     那条测试不是多余的。
     //
     // requireSignature 必须显式开：默认 false 时插件会**自己给没签名的 token 补上签名**，
     // 于是光有一个裸的会话 id（session.token 那一列的值）就能冒充用户——数据库只读权限、
