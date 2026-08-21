@@ -37,6 +37,16 @@ export const createApp = (deps: AppDeps) => {
       allowHeaders: ["Content-Type"],
       // Retry-After 不在 CORS 安全清单里，不显式 expose 浏览器就读不到，
       // 429 等于没告诉客户端该等多久。X-Retry-After 是 better-auth 自己用的名字。
+      //
+      // ⚠️ 这个清单**不能变空**（哪怕将来判断 web 不再需要限流倒计时也要留住它）：
+      // hono 的 cors 只在清单非空时才在 next() 前把 `Access-Control-Expose-Headers` 写进
+      // c.res.headers，随后 Hono 的 `set res` 把它盖回下游响应上——bearer plugin 自己往那个头里
+      // 加的 `set-auth-token` 正是被这一步覆盖掉的（插件的 after hook 对每个建立会话的响应无条件
+      // 执行，见 modules/auth/auth.ts 的注释）。清单一空，cors 整个不设这个头，插件的值直接透出去，
+      // 跨源浏览器 JS 就能读到可复用的会话 token。auth.integration.test.ts 的
+      // does_not_expose_the_token_header_to_cross_origin_browser_javascript 钉住这条。
+      // 后续可选加固（本切片没做，属行为改动）：在没有 Authorization 请求头的响应上直接剥掉
+      // set-auth-token，把保障从"被覆盖"变成"来源即无"。
       exposeHeaders: ["Retry-After", "X-Retry-After"],
       maxAge: 600,
     }),

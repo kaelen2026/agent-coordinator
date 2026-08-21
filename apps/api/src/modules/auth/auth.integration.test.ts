@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   apiErrorSchema,
+  bearerAuthorization,
   betterAuthErrorSchema,
   meResponseSchema,
+  SESSION_TOKEN_HEADER,
 } from "@agent-coordinator/contracts";
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Pool } from "pg";
@@ -16,7 +18,7 @@ import { installConsoleRedaction } from "../../shared/log-redaction.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { apiRateLimit } from "../../shared/rate-limit.schema.js";
 import { createAuth } from "./auth.js";
-import { account, rateLimit, user } from "./schema.js";
+import { account, rateLimit, session, user } from "./schema.js";
 
 // 打真实 Postgres（compose.yaml 起的实例），不 mock 数据库。
 // 每个测试自建自清数据：邮箱随机、结束删自己建的 user（session/account 级联删除）。
@@ -56,20 +58,31 @@ const url = (path: string): string => `${config.auth.baseUrl}${path}`;
 // 浏览器一定会带 Origin，better-auth 的 CSRF 检查也依赖它——测试照着真实调用方发。
 const [browserOrigin = "http://localhost:3000"] = config.auth.trustedOrigins;
 
+// better-auth 总是把 baseURL 的源放进 trustedOrigins，所以这个值不用配也一定被信任——
+// 原生客户端（iOS）照它发 Origin。
+const apiOrigin = new URL(config.auth.baseUrl).origin;
+
 type RequestOptions = {
   cookie?: string;
-  origin?: string;
+  /** `null` = 一个 Origin 头都不发（原生 URLSession 的默认行为）。 */
+  origin?: string | null;
+  /** 会话 token，按 `Authorization: Bearer <token>` 发出。 */
+  bearer?: string;
   forwardedFor?: string;
   /** 客户端伪造的内部 IP 头——信任边界必须无条件覆盖掉它。 */
   forgedClientIp?: string;
 };
 
-const headersFor = (options: RequestOptions): Record<string, string> => ({
-  Origin: options.origin ?? browserOrigin,
-  ...(options.cookie === undefined ? {} : { Cookie: options.cookie }),
-  ...(options.forwardedFor === undefined ? {} : { "X-Forwarded-For": options.forwardedFor }),
-  ...(options.forgedClientIp === undefined ? {} : { [CLIENT_IP_HEADER]: options.forgedClientIp }),
-});
+const headersFor = (options: RequestOptions): Record<string, string> => {
+  const origin = options.origin === undefined ? browserOrigin : options.origin;
+  return {
+    ...(origin === null ? {} : { Origin: origin }),
+    ...(options.bearer === undefined ? {} : { Authorization: bearerAuthorization(options.bearer) }),
+    ...(options.cookie === undefined ? {} : { Cookie: options.cookie }),
+    ...(options.forwardedFor === undefined ? {} : { "X-Forwarded-For": options.forwardedFor }),
+    ...(options.forgedClientIp === undefined ? {} : { [CLIENT_IP_HEADER]: options.forgedClientIp }),
+  };
+};
 
 const post = async (
   path: string,
@@ -94,8 +107,22 @@ const cookieFrom = (res: Response): string =>
     .filter((entry): entry is string => entry !== undefined && entry.length > 0)
     .join("; ");
 
-const signUp = async (email: string, password = PASSWORD): Promise<Response> =>
-  post("/api/auth/sign-up/email", { name: "Test User", email, password });
+/** bearer plugin 把会话 token 放在这个响应头里，原生客户端从这里取。头名取自契约。 */
+const tokenFrom = (res: Response): string => res.headers.get(SESSION_TOKEN_HEADER) ?? "";
+
+/**
+ * `set-auth-token` 的形状：`<会话 id>.<HMAC 签名>`，签名是**标准** base64
+ * （会出现 `+` `/` 和末尾的 `=` 填充）。契约里写死了它，因为客户端必须原样透传——
+ * 任何 URL 编解码、trim、按 `.` 截断都会让 token 失效。
+ */
+const TOKEN_FORMAT = /^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9+/]{16,}={0,2}$/;
+
+const signUp = async (
+  email: string,
+  password = PASSWORD,
+  options: RequestOptions = {},
+): Promise<Response> =>
+  post("/api/auth/sign-up/email", { name: "Test User", email, password }, options);
 
 const signIn = async (
   email: string,
@@ -285,6 +312,292 @@ describe("cross-origin protection", () => {
   });
 });
 
+// 原生客户端（iOS URLSession）：不带 cookie；Origin 发 api 自己的源。
+const NATIVE: RequestOptions = { origin: apiOrigin };
+
+describe("bearer token auth for native clients", () => {
+  it("sign_up_hands_the_native_client_a_session_token_in_a_response_header", async () => {
+    const res = await signUp(freshEmail(), PASSWORD, NATIVE);
+
+    expect(res.status).toBe(200);
+    expect(tokenFrom(res)).not.toBe("");
+  });
+
+  it("hands_out_a_signed_token_shaped_the_way_the_contract_promises", async () => {
+    // iOS 按这个形状存 Keychain 并原样发回；形状变了客户端解析假设就得跟着改，
+    // 而客户端不可热修——所以钉在测试里，better-auth 升级动了它必须先红。
+    const token = tokenFrom(await signUp(freshEmail(), PASSWORD, NATIVE));
+
+    expect(token).toMatch(TOKEN_FORMAT);
+  });
+
+  it("sign_in_hands_the_native_client_a_session_token_in_a_response_header", async () => {
+    const email = freshEmail();
+    await signUp(email, PASSWORD, NATIVE);
+
+    const res = await signIn(email, PASSWORD, NATIVE);
+
+    expect(res.status).toBe(200);
+    expect(tokenFrom(res)).not.toBe("");
+  });
+
+  it("me_returns_the_same_whitelisted_user_for_a_bearer_token_as_for_a_cookie", async () => {
+    const email = freshEmail();
+    const signedUp = await signUp(email, PASSWORD, NATIVE);
+
+    const viaBearer = await get("/api/me", { ...NATIVE, bearer: tokenFrom(signedUp) });
+    expect(viaBearer.status).toBe(200);
+
+    const viaCookie = await get("/api/me", { cookie: cookieFrom(signedUp) });
+    expect(viaCookie.status).toBe(200);
+
+    // 两条路径必须给出完全相同的响应体——白名单不能因为凭证形态而多一个字段
+    expect(await viaBearer.json()).toEqual(await viaCookie.json());
+  });
+
+  it("sign_out_with_a_bearer_token_revokes_that_token", async () => {
+    const token = tokenFrom(await signUp(freshEmail(), PASSWORD, NATIVE));
+    expect((await get("/api/me", { ...NATIVE, bearer: token })).status).toBe(200);
+
+    const out = await post("/api/auth/sign-out", {}, { ...NATIVE, bearer: token });
+    expect(out.status).toBe(200);
+
+    const after = await get("/api/me", { ...NATIVE, bearer: token });
+    expect(after.status).toBe(401);
+    expect(apiErrorSchema.parse(await after.json()).error.code).toBe("UNAUTHENTICATED");
+  });
+});
+
+describe("bearer token rejection", () => {
+  /** 拿到一个签名合法、但对应会话已经不在库里的 token（等价于被吊销 / 过期后清理）。 */
+  const orphanedToken = async (): Promise<string> => {
+    const email = freshEmail();
+    const token = tokenFrom(await signUp(email, PASSWORD, NATIVE));
+    const [owner] = await db.select().from(user).where(eq(user.email, email));
+    await db.delete(session).where(eq(session.userId, owner?.id ?? ""));
+    return token;
+  };
+
+  it("rejects_a_bare_session_id_that_carries_no_signature", async () => {
+    // bearer plugin 默认（requireSignature: false）会**自己给没签名的 token 补上签名**，
+    // 于是光有会话 id 就能认证——数据库读权限、一行日志、一次备份泄漏都足以冒充用户。
+    // 我们只发签名过的 token，所以要求签名不损失任何功能。
+    const email = freshEmail();
+    await signUp(email, PASSWORD, NATIVE);
+    const [owner] = await db.select().from(user).where(eq(user.email, email));
+    const [row] = await db
+      .select()
+      .from(session)
+      .where(eq(session.userId, owner?.id ?? ""));
+    const bareId = row?.token ?? "";
+    // 先确认真拿到了 id，否则下面的 401 是因为发了空串而假绿
+    expect(bareId).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+    expect(bareId).not.toContain(".");
+
+    const res = await get("/api/me", { ...NATIVE, bearer: bareId });
+
+    expect(res.status).toBe(401);
+    expect(apiErrorSchema.parse(await res.json()).error.code).toBe("UNAUTHENTICATED");
+  });
+
+  it("rejects_a_bearer_token_whose_signature_has_been_tampered_with", async () => {
+    const token = tokenFrom(await signUp(freshEmail(), PASSWORD, NATIVE));
+    const [id = "", signature = ""] = token.split(".");
+    expect(signature.length).toBeGreaterThan(8);
+    // 只动签名的最后一个字符：id 仍然指向一条真实会话，唯一失效的是 HMAC
+    const flipped = `${signature.slice(0, -1)}${signature.at(-1) === "A" ? "B" : "A"}`;
+
+    const res = await get("/api/me", { ...NATIVE, bearer: `${id}.${flipped}` });
+
+    expect(res.status).toBe(401);
+    expect(apiErrorSchema.parse(await res.json()).error.code).toBe("UNAUTHENTICATED");
+  });
+
+  it("rejects_a_correctly_signed_token_whose_session_no_longer_exists", async () => {
+    const res = await get("/api/me", { ...NATIVE, bearer: await orphanedToken() });
+
+    expect(res.status).toBe(401);
+    expect(apiErrorSchema.parse(await res.json()).error.code).toBe("UNAUTHENTICATED");
+  });
+
+  it("rejects_a_bearer_token_whose_session_has_expired", async () => {
+    const email = freshEmail();
+    const token = tokenFrom(await signUp(email, PASSWORD, NATIVE));
+    const [owner] = await db.select().from(user).where(eq(user.email, email));
+    const expired = await db
+      .update(session)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(session.userId, owner?.id ?? ""))
+      .returning();
+    // 确认真的改到了行，否则这个测试测的是"会话还有效"
+    expect(expired).toHaveLength(1);
+
+    const res = await get("/api/me", { ...NATIVE, bearer: token });
+
+    expect(res.status).toBe(401);
+    expect(apiErrorSchema.parse(await res.json()).error.code).toBe("UNAUTHENTICATED");
+  });
+
+  it("treats_sign_out_with_an_already_dead_token_as_success", async () => {
+    // iOS 的登出按钮完全可能在 token 已经失效之后才被按下（会话过期、别处登出过）。
+    // 实测 better-auth 在这里是幂等的：照样 200，不报错——契约里必须写清，否则客户端
+    // 会给用户弹一个毫无意义的"登出失败"。
+    const dead = await orphanedToken();
+
+    const res = await post("/api/auth/sign-out", {}, { ...NATIVE, bearer: dead });
+
+    expect(res.status).toBe(200);
+    // 也不会顺手再发一个 token 回来
+    expect(tokenFrom(res)).toBe("");
+  });
+
+  it("answers_every_malformed_credential_exactly_like_a_missing_one", async () => {
+    // 401 的响应不许透露"token 格式不对"/"签名错"/"会话没了"的差别（security.md），
+    // 也不许回显 token 本身或任何内部细节。
+    const orphaned = await orphanedToken();
+    const baseline = await get("/api/me", NATIVE);
+    const baselineBody = await baseline.text();
+
+    for (const token of ["", "   ", "not-a-token", "a.b", `${orphaned}extra`, orphaned]) {
+      const res = await get("/api/me", { ...NATIVE, bearer: token });
+      // 把 token 拼进断言的两侧，失败时能直接看出是哪个变体崩的
+      const label = `token=${JSON.stringify(token)}`;
+      expect(`${label} status=${res.status}`).toBe(`${label} status=${baseline.status}`);
+      expect(`${label} body=${await res.text()}`).toBe(`${label} body=${baselineBody}`);
+    }
+    expect(baseline.status).toBe(401);
+    expect(baselineBody).not.toMatch(/session|cookie|hmac|signature|better-auth/i);
+  });
+});
+
+describe("origin requirements for native clients", () => {
+  // 原生 URLSession 默认一个 Origin 头都不发。better-auth 的 origin/CSRF 校验只在请求
+  // **带 Cookie 头**时才强制（origin-check.mjs 的 `useCookies`），或者在请求已经带了
+  // Origin/Referer/Sec-Fetch-* 时强制（sign-in/sign-up 的 formCsrfMiddleware）。
+  // 这是 iOS 契约的地基：契约里那张 3×3 的 Origin 矩阵，本块逐格钉住（"不发 Origin" 与
+  // "不可信 Origin" 两行，共 6 格；"api 自己的源"那一行由上面 bearer 各测试用 NATIVE 覆盖）——
+  // 升级 better-auth 时任何一格变了必须让 CI 先红，而不是等 iOS 上线挂掉。
+  const noOrigin: RequestOptions = { origin: null };
+
+  it("accepts_sign_up_from_a_client_that_sends_no_origin_and_no_cookie", async () => {
+    const res = await signUp(freshEmail(), PASSWORD, noOrigin);
+
+    expect(res.status).toBe(200);
+    expect(tokenFrom(res)).not.toBe("");
+  });
+
+  it("accepts_sign_in_from_a_client_that_sends_no_origin_and_no_cookie", async () => {
+    const email = freshEmail();
+    await signUp(email, PASSWORD, noOrigin);
+
+    const res = await signIn(email, PASSWORD, noOrigin);
+
+    expect(res.status).toBe(200);
+    expect(tokenFrom(res)).not.toBe("");
+  });
+
+  it("accepts_sign_out_with_a_bearer_token_and_no_origin_header", async () => {
+    const token = tokenFrom(await signUp(freshEmail(), PASSWORD, noOrigin));
+    // 先确认这个 token 本来是好用的。少了这一步，下面的 200 + 401 在"bearer 根本没生效"
+    // 时也照样成立（sign-out 无会话时是幂等 200，/api/me 无凭证本就是 401）——那就是假绿。
+    expect((await get("/api/me", { ...noOrigin, bearer: token })).status).toBe(200);
+
+    const out = await post("/api/auth/sign-out", {}, { ...noOrigin, bearer: token });
+
+    expect(out.status).toBe(200);
+    expect((await get("/api/me", { ...noOrigin, bearer: token })).status).toBe(401);
+  });
+
+  it("accepts_me_with_a_bearer_token_and_no_origin_header", async () => {
+    // /api/me 是本仓库自有路由，不经过 better-auth 的 origin 校验——但必须实测确认
+    const email = freshEmail();
+    const token = tokenFrom(await signUp(email, PASSWORD, noOrigin));
+
+    const res = await get("/api/me", { ...noOrigin, bearer: token });
+
+    expect(res.status).toBe(200);
+    expect(meResponseSchema.parse(await res.json()).user.email).toBe(email);
+  });
+
+  it("still_rejects_sign_up_from_an_untrusted_origin_even_without_a_cookie", async () => {
+    // 反面：客户端一旦发了 Origin，就必须发一个在信任清单里的值——不能随便编一个。
+    const email = freshEmail();
+    const res = await signUp(email, PASSWORD, { origin: "http://evil.example.com" });
+
+    expect(res.status).toBe(403);
+    expect(betterAuthErrorSchema.parse(await res.json()).code).toBe("INVALID_ORIGIN");
+    expect(
+      await db
+        .select()
+        .from(user)
+        .where(inArray(user.email, [email])),
+    ).toHaveLength(0);
+  });
+
+  it("does_not_check_origin_on_bearer_sign_out_even_when_the_origin_is_untrusted", async () => {
+    // 契约 Origin 矩阵第三行第二格。今天成立的原因是：强制校验只发生在 sign-up/sign-in
+    // （formCsrfMiddleware）或请求带 Cookie 时，bearer 的 sign-out 两条都不沾。
+    // better-auth 一旦把校验改成无条件，这一格会先红——契约的立论就是每格都有测试钉住。
+    const token = tokenFrom(await signUp(freshEmail(), PASSWORD, NATIVE));
+    // 先确认 token 本来好用：少了这一步，"200 + 之后 401"在 bearer 完全没生效时也成立
+    expect((await get("/api/me", { ...NATIVE, bearer: token })).status).toBe(200);
+
+    const out = await post(
+      "/api/auth/sign-out",
+      {},
+      { origin: "http://evil.example.com", bearer: token },
+    );
+
+    // 200 且会话真的被吊销——不是"被挡掉但幂等成功"
+    expect(out.status).toBe(200);
+    expect((await get("/api/me", { ...NATIVE, bearer: token })).status).toBe(401);
+  });
+
+  it("does_not_check_origin_on_our_own_protected_endpoint_even_when_the_origin_is_untrusted", async () => {
+    // 契约 Origin 矩阵第三行第三格。/api/me 是本仓库自有路由，不经过 better-auth 的
+    // origin 校验；跨源浏览器 JS 依然读不到响应（CORS 不回 allow-origin，app.test.ts 钉住）。
+    const email = freshEmail();
+    const token = tokenFrom(await signUp(email, PASSWORD, NATIVE));
+
+    const res = await get("/api/me", { origin: "http://evil.example.com", bearer: token });
+
+    expect(res.status).toBe(200);
+    expect(meResponseSchema.parse(await res.json()).user.email).toBe(email);
+  });
+
+  it("still_requires_a_trusted_origin_once_the_request_carries_a_cookie", async () => {
+    // cookie 路径的 CSRF 防护一点没松：带 cookie 就必须带可信 Origin。
+    const cookie = cookieFrom(await signUp(freshEmail()));
+
+    const res = await post("/api/auth/sign-out", {}, { cookie, origin: "http://evil.example.com" });
+
+    expect(res.status).toBe(403);
+    expect(betterAuthErrorSchema.parse(await res.json()).code).toBe("INVALID_ORIGIN");
+  });
+});
+
+describe("the session token stays unreachable to browser javascript", () => {
+  it("does_not_expose_the_token_header_to_cross_origin_browser_javascript", async () => {
+    // set-auth-token 出现在**每个**建立会话的响应上，web 的也一样。web 用 httpOnly cookie，
+    // 不需要读它；只要不 expose，跨源的浏览器 JS 就读不到——等于没给 XSS 多一个取 token 的口子。
+    const res = await signUp(freshEmail());
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get(SESSION_TOKEN_HEADER)).not.toBeNull();
+    expect((res.headers.get("access-control-expose-headers") ?? "").toLowerCase()).not.toContain(
+      SESSION_TOKEN_HEADER,
+    );
+    // CORS 的允许请求头清单里也没有 Authorization：浏览器发不出 bearer（预检就挡掉）
+    const preflight = await app.request(url("/api/me"), {
+      method: "OPTIONS",
+      headers: { Origin: browserOrigin, "Access-Control-Request-Method": "GET" },
+    });
+    expect(preflight.headers.get("access-control-allow-headers") ?? "").not.toMatch(
+      /authorization/i,
+    );
+  });
+});
+
 describe("rate limiting", () => {
   // 配置了可信代理，客户端 IP 从 X-Forwarded-For 链上解析出来
   const behindProxy = makeApp({ trustedProxies: ["10.0.0.0/8"] });
@@ -353,6 +666,10 @@ describe("rate limiting", () => {
       throw new Error("expected better-auth to rate limit within 6 attempts");
     }
     expect(limited.headers.get("content-type")).toMatch(/text\/plain/);
+    // 契约让客户端在 /api/auth/* 上读 X-Retry-After（自有端点是 Retry-After，名字不同）。
+    // 这条不对称此前没有任何断言：better-auth 改名的话 api 测试照绿，而 web 的限流倒计时会
+    // 静默退回默认值、iOS 按契约读的头永远为空。
+    expect(limited.headers.get("x-retry-after") ?? "").toMatch(/^\d+$/);
     // 头说 text/plain，body 其实是 JSON——按 content-type 解析的客户端会拿到字符串
     expect(betterAuthErrorSchema.parse(JSON.parse(await limited.text())).code).toBeUndefined();
   });
@@ -378,6 +695,39 @@ describe("rate limiting", () => {
     const last = await get("/api/me", asClient("203.0.113.20"), tight);
     expect(last.headers.get("retry-after")).toMatch(/^\d+$/);
     expect(apiErrorSchema.parse(await last.json()).error.code).toBe("RATE_LIMITED");
+  });
+
+  it("rate_limits_the_bearer_path_on_our_own_endpoints_too", async () => {
+    // bearer plugin 是 better-auth 的 hook，不碰我们的中间件链——但"新凭证形态绕过了限流"
+    // 是这类改动最典型的翻车方式，所以正面钉住（security.md：所有对外 endpoint 有限流）。
+    const tight = makeApp({
+      trustedProxies: ["10.0.0.0/8"],
+      rateLimit: { windowSeconds: 60, max: 3 },
+    });
+    const token = tokenFrom(await signUp(freshEmail(), PASSWORD, NATIVE));
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const options = { ...NATIVE, ...asClient("203.0.113.40"), bearer: token };
+      statuses.push((await get("/api/me", options, tight)).status);
+    }
+
+    // 前三次是已认证的 200——证明限流拦的是"额度用尽"，不是"凭证无效"
+    expect(statuses).toEqual([200, 200, 200, 429, 429]);
+  });
+
+  it("rate_limits_sign_in_for_a_native_client_that_sends_no_origin", async () => {
+    const email = freshEmail();
+    await signUp(email, PASSWORD, NATIVE);
+    await db.delete(rateLimit);
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const options = { origin: null, ...asClient("203.0.113.70") };
+      statuses.push((await signIn(email, "wrong-password", options, behindProxy)).status);
+    }
+
+    expect(statuses).toContain(429);
   });
 
   it("gives_each_client_its_own_budget_on_our_own_endpoints", async () => {
@@ -447,6 +797,33 @@ describe("logging on normal business paths", () => {
     // 422 证明确实走到了"邮箱已存在"这条分支，不是因为没跑到而假绿
     expect(status).toBe(422);
     expect(captured.join("\n")).not.toContain(email);
+  });
+
+  it("never logs the session token anywhere along the native happy path", async () => {
+    // 会话 token 在两个头里出现：响应的 set-auth-token、请求的 Authorization。
+    // 这条用例的价值在于**将来**：谁要是加一个打请求/响应头的中间件，这里立刻红。
+    let token = "";
+    const captured = await captureConsole(async (target) => {
+      const email = freshEmail();
+      const signedUp = await post(
+        "/api/auth/sign-up/email",
+        { name: "Native", email, password: PASSWORD },
+        NATIVE,
+        target,
+      );
+      token = tokenFrom(signedUp);
+      // 先确认这一趟真的拿到了 token，否则下面的"没出现"是废断言
+      expect(token).toMatch(TOKEN_FORMAT);
+
+      const me = await get("/api/me", { ...NATIVE, bearer: token }, target);
+      expect(me.status).toBe(200);
+      const out = await post("/api/auth/sign-out", {}, { ...NATIVE, bearer: token }, target);
+      expect(out.status).toBe(200);
+    });
+
+    const [tokenId = ""] = token.split(".");
+    expect(captured.join("\n")).not.toContain(token);
+    expect(captured.join("\n")).not.toContain(tokenId);
   });
 });
 
@@ -539,6 +916,47 @@ describe("dependency failure", () => {
       expect(log).not.toContain("params:");
     },
   );
+
+  it("keeps the bearer token out of the log when the session table is unavailable", async () => {
+    // cookie 路径的同一条红线上面已经测过了。bearer 换了凭证的**载体**（请求头而不是
+    // cookie），而 `/api/me` 查会话仍然是 `where "token" = $1`——drizzle 把绑定参数拼进
+    // error.message，所以这条路径必须单独钉住，不能靠 cookie 那个用例代表。
+    const email = freshEmail();
+    const token = tokenFrom(await signUp(email, PASSWORD, NATIVE));
+    const [tokenId = ""] = token.split(".");
+    // 先确认拿到的是**签名过的**完整 token，否则下面的"没出现"全是废断言
+    expect(tokenId).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+    expect(token.length).toBeGreaterThan(tokenId.length + 8);
+
+    let status = 0;
+    let body = "";
+    const captured = await captureConsole(async (target) => {
+      await withBrokenTable("session", async () => {
+        const res = await get("/api/me", { ...NATIVE, bearer: token }, target);
+        status = res.status;
+        body = await res.text();
+      });
+    });
+
+    // 确实走到了故障路径并确实记了日志——否则"没有敏感值"会因为根本没日志而假绿
+    expect(status).toBe(500);
+    expect(captured.join("")).not.toBe("");
+
+    const log = captured.join("\n");
+    for (const secret of [
+      { label: "signed bearer token", value: token },
+      { label: "session id", value: tokenId },
+      { label: "email", value: email },
+    ]) {
+      expect(`${secret.label} in log: ${log.includes(secret.value)}`).toBe(
+        `${secret.label} in log: false`,
+      );
+      expect(`${secret.label} in body: ${body.includes(secret.value)}`).toBe(
+        `${secret.label} in body: false`,
+      );
+    }
+    expect(log).not.toContain("params:");
+  });
 
   it.each(["session", "user"])(
     "still records what broke when the %s table is unavailable",
