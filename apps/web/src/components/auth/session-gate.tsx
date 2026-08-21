@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useMemo } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { AuthFailure } from "@/lib/auth/failure";
 import { authFailureMessage } from "@/lib/auth/messages";
@@ -69,7 +69,9 @@ export function SessionGate({
   return (
     <div className="flex flex-col items-start gap-3">
       <p className="text-muted-foreground text-sm">这个页面需要登录后才能查看。</p>
-      <Button type="button" render={<Link href={signInHref}>前往登录</Link>} />
+      <Link href={signInHref} className={buttonVariants()}>
+        前往登录
+      </Link>
     </div>
   );
 }

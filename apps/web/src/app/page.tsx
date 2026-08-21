@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 
 export default function HomePage() {
   return (
@@ -9,9 +9,15 @@ export default function HomePage() {
         <p className="text-muted-foreground text-sm">登录后查看你的账号信息。</p>
       </div>
       <div className="flex flex-wrap gap-3">
-        <Button render={<Link href="/sign-in">登录</Link>} />
-        <Button variant="outline" render={<Link href="/sign-up">注册</Link>} />
-        <Button variant="ghost" render={<Link href="/dashboard">我的账号</Link>} />
+        <Link href="/sign-in" className={buttonVariants()}>
+          登录
+        </Link>
+        <Link href="/sign-up" className={buttonVariants({ variant: "outline" })}>
+          注册
+        </Link>
+        <Link href="/dashboard" className={buttonVariants({ variant: "ghost" })}>
+          我的账号
+        </Link>
       </div>
     </main>
   );
