@@ -55,8 +55,18 @@ export const toGateState = ({
  * 客户端守卫在同站与跨站部署下行为一致，不会静默失效。真正的鉴权始终在 api 侧，
  * 这里只负责别把受保护界面渲染给没登录的人。
  *
- * **每次挂载都亲自校验一次会话**，不复用缓存结论。多一次 get-session 往返换来的是：
- * 守卫的判定永远基于本次挂载发起的读取，不会被上一次匿名访问留下的缓存误导。
+ * **每次挂载都亲自校验一次会话**，不复用缓存结论：守卫的判定永远基于本次挂载发起的
+ * 读取，不会被上一次匿名访问留下的缓存误导。
+ *
+ * 成本要按服务端口径算，别按浏览器口径算。`refetch()` 会取消 store 自己那次在途请求，
+ * 所以**客户端只看到 1 个响应**；但取消发生在请求已经发出并到达 api 之后，
+ * **api 的限流桶实打实记了 2 次**。也就是每进一次受保护页消耗 2 个 get-session 配额
+ * （加上 CurrentUserCard 的 /api/me，一共 3 个出站请求）。
+ * 按 better-auth 每 IP 每滚动分钟 100 次算，天花板是 50 次/分钟——真人点不到，
+ * 机器全速点 3.6 秒就能撞上（实测第 51 次进入触发 429）。
+ *
+ * 撞上了也不会变成莫名登出：429 归 `classifyAuthFailure` 的 rate-limited 分支，
+ * 走 SessionGate 的错误态（提示 + 重试入口），仍然不满足"确定未登录"，不会把人弹走。
  */
 export function RequireSession({ children }: { children: ReactNode }) {
   const { data, isPending, error, refetch } = authClient.useSession();
