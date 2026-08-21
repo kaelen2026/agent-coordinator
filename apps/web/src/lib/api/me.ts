@@ -32,9 +32,15 @@ const readJsonBody = async (response: Response): Promise<unknown> => {
  * 前端拿不到也不需要拿——绝不把任何 token 落进 localStorage。
  */
 export const fetchCurrentUser = async (signal?: AbortSignal): Promise<ApiResult<AuthUser>> => {
+  // 必须在 try 之外求值。放进去的话，漏配 NEXT_PUBLIC_API_BASE_URL 这种**永久性配置错误**
+  // 会被下面那个 catch 洗成 networkFailure()，用户看到"网络连接失败，请重试"和一个
+  // 永远点不通的重试按钮——把配置问题伪装成网络抖动，正是"不许静默降级"要避免的。
+  // 配置错误照常上抛，交给上层的 error boundary。
+  const baseUrl = getApiBaseUrl();
+
   let response: Response;
   try {
-    response = await fetch(`${getApiBaseUrl()}/api/me`, {
+    response = await fetch(`${baseUrl}/api/me`, {
       method: "GET",
       credentials: "include",
       headers: { Accept: "application/json" },

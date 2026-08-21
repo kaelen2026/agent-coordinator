@@ -137,3 +137,35 @@ describe("fetchCurrentUser 的错误分支", () => {
     await expect(fetchCurrentUser()).rejects.toThrowError(/aborted/i);
   });
 });
+
+describe("fetchCurrentUser 对配置错误的处理", () => {
+  it("api 基址漏配时把配置错误抛出去，不洗成「网络连接失败」", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "");
+
+    // 关键在于"不被降级"：配置错误是永久性的，伪装成网络抖动会让用户对着一个
+    // 永远点不通的重试按钮反复重试。
+    await expect(fetchCurrentUser()).rejects.toThrowError(/NEXT_PUBLIC_API_BASE_URL/);
+  });
+
+  it("api 基址写错时同样上抛", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "localhost:3001");
+
+    await expect(fetchCurrentUser()).rejects.toThrowError(/NEXT_PUBLIC_API_BASE_URL/);
+  });
+
+  it("配置错误时根本不该发出请求", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "");
+
+    await expect(fetchCurrentUser()).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("真正的网络失败仍然归为 network，这条修复不能把网络分支弄丢", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await expect(fetchCurrentUser()).resolves.toEqual({
+      ok: false,
+      failure: { kind: "network" },
+    });
+  });
+});
