@@ -1,0 +1,2 @@
+// Release 的 api 地址由发版环境提供；此处留占位，切环境只改 xcconfig，不动代码。
+API_BASE_URL = https:/$()/api.example.invalid

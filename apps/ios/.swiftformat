@@ -1,0 +1,14 @@
+# 与仓库现有 Swift 代码风格一致；只做格式化，不改语义。
+--swiftversion 6.0
+--indent 4
+--maxwidth 120
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--closingparen balanced
+--commas always
+--trailingclosures
+--stripunusedargs closure-only
+--self remove
+--header ignore
+--exclude AgentCoordinator.xcodeproj
