@@ -69,9 +69,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      # 每次 run 现生成、用完即弃：仓库和 secrets 里都不需要存这个值
+      # 每次 run 现生成、用完即弃：仓库和 secrets 里都不需要存这个值。
+      # add-mask 让它不出现在后续步骤的日志里（哪怕它只是测试用的临时值）
       - name: Generate ephemeral auth secret
-        run: echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+        run: |
+          secret="$(openssl rand -hex 32)"
+          echo "::add-mask::$secret"
+          echo "BETTER_AUTH_SECRET=$secret" >> "$GITHUB_ENV"
 
       - name: Migrate database
         run: pnpm --filter=@agent-coordinator/api db:migrate
