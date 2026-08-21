@@ -25,9 +25,7 @@ model: inherit
 建议：怎么改（方向即可，不写完整代码）
 ```
 
-- **BLOCKER**：正确性 bug 或安全问题，必须返工。
-- **MAJOR**：架构违规或测试缺失，原则上返工，coordinator 可裁决豁免。
-- **MINOR**：建议性改进，不阻塞合并。
+等级语义与处置以 `.claude/rules/severity.md` 为唯一定义，此处不另行解释。
 
 ## 约束
 

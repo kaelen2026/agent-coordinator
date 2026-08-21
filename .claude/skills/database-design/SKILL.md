@@ -7,6 +7,12 @@ description: 建表、改表、写迁移、设计索引时使用：从查询出�
 
 **输入**：切片的数据需求与查询场景。**输出**：schema + 索引 + 可安全上线的迁移 + 集成测试。
 
+**本仓库落地（PostgreSQL 17 + Drizzle）**：
+
+- ORM 用 **Drizzle**，迁移用 **drizzle-kit**：schema 以 TypeScript 定义（modular monolith——每个模块的表定义放该模块内，drizzle 配置汇总），`drizzle-kit generate` 产出 SQL 迁移文件入库走 review，禁止手改已生成的历史迁移。
+- 生成的迁移 SQL 必须人工过一遍本 SOP 步骤 5 的不停机检查（drizzle-kit 不懂锁表风险）。
+- 本地库：`pnpm infra:up`（见 CLAUDE.md 本地基建）；首个用到数据库的切片再引入 drizzle 依赖（简单优先，不预装）。
+
 ## 步骤 1：列出查询场景，再建模
 
 先写下这个切片的所有读写路径（"按 tenant + status 查任务列表，按时间排序"），再设计表——表结构服务查询，不反过来。

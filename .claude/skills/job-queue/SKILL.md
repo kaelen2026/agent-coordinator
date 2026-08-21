@@ -30,11 +30,7 @@ attempts, max_attempts, run_at, locked_by, locked_at, last_error
 
 ## 步骤 3：实现幂等处理器
 
-按优先级选幂等手段：
-
-1. 数据库唯一键吞掉重复插入；
-2. 状态机条件更新（`UPDATE ... WHERE status='pending'`，影响行数为 0 说明已处理）；
-3. 显式去重表记录已处理 job_id。
+幂等手段清单（唯一约束 / 原子条件更新 / 去重表）与选择优先级以 `distributed-systems` skill 步骤 1 为唯一定义；队列消费场景最常用的是状态机条件更新（`UPDATE ... WHERE status='pending'`，影响行数为 0 即已处理过）。
 
 - ✅ 检查点：写一个"同一消息投递两次"的测试，两次结果与一次相同。
 

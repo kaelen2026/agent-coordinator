@@ -31,8 +31,9 @@ description: 在本 Turborepo monorepo 中新增代码、新建包、组织依�
 
 ## 步骤 4：依赖管理
 
-- 装依赖装到用它的那个包：`pnpm --filter @agent-coordinator/web add <dep>`；根目录只放仓库级工具（turbo）。
+- 装依赖装到用它的那个包：`pnpm --filter @agent-coordinator/web add <dep>`；根目录只放仓库级工具（turbo/biome/husky）。
 - 多包共用的第三方依赖版本保持一致（pnpm catalog 或人工对齐），出现两个版本视为待修债务。
+- 新依赖带 install/postinstall 构建脚本时 pnpm 11 会默认拦截（`ERR_PNPM_IGNORED_BUILDS`）：确认该包可信后在 `pnpm-workspace.yaml` 的 `allowBuilds` 显式放行（已放行：sharp、esbuild），不盲目放行不认识的包。
 
 ## 步骤 5：跨包改动的切片与 PR
 

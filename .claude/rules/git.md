@@ -24,7 +24,7 @@ git worktree add ../agent-coordinator-task-retry -b feat/task-retry
 
 ## PR 流程
 
-1. worktree 内完成实现，测试全绿后提交；commit message 说清"为什么"，不只是"改了什么"。
+1. worktree 内完成实现，测试全绿后提交；commit message 与 PR 标题必须符合 **Conventional Commits**（`type(scope): 描述`，如 `feat(api): 任务重试接口`——commitlint 在钩子与 CI 强制校验，PR 标题即 squash 后 main 上的 message），正文说清"为什么"，不只是"改了什么"。
 2. `git push -u origin <branch>` 后用 `gh pr create` 建 PR，PR 描述包含：改动概述、DoD 完成情况、测试证据。
 3. PR 必须经过 reviewer 评审通过（无 BLOCKER/MAJOR）+ qa 验收 PASS 才能合入。
 4. 合并方式统一 squash merge，保持 main 历史一条直线。
