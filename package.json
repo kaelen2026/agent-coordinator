@@ -17,6 +17,9 @@
     "lint:fix": "biome lint --write .",
     "check": "biome check .",
     "check:fix": "biome check --write .",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down",
+    "infra:reset": "docker compose down -v && docker compose up -d --wait",
     "prepare": "husky"
   },
   "lint-staged": {
