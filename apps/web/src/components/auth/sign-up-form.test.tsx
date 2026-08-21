@@ -114,3 +114,52 @@ describe("SignUpForm 的提交", () => {
     expect(screen.getByRole("button", { name: "注册" })).toBeDisabled();
   });
 });
+
+describe("SignUpForm 的无障碍关联", () => {
+  it("字段出错时，输入框标记为无效，且错误原因通过 aria-describedby 被读屏读到", async () => {
+    stubFetch({});
+    render(<SignUpForm onSuccess={vi.fn()} />);
+
+    await fillAndSubmit({ name: "阿玖", email: "a@example.com", password: "short" });
+    await screen.findByText("密码至少 12 位");
+
+    const password = screen.getByLabelText("密码");
+    expect(password).toHaveAttribute("aria-invalid", "true");
+    // 光标记 aria-invalid 不够：读屏用户只会听到"无效"，听不到为什么
+    expect(password).toHaveAccessibleDescription(/密码至少 12 位/);
+  });
+
+  it("密码规则提示不会被错误文案挤掉，两条同时关联", async () => {
+    stubFetch({});
+    render(<SignUpForm onSuccess={vi.fn()} />);
+
+    await fillAndSubmit({ name: "阿玖", email: "a@example.com", password: "short" });
+    await screen.findByText("密码至少 12 位");
+
+    const description = screen.getByLabelText("密码").getAttribute("aria-describedby") ?? "";
+    expect(description.split(" ")).toEqual(
+      expect.arrayContaining(["password-hint", "password-error"]),
+    );
+    expect(screen.getByLabelText("密码")).toHaveAccessibleDescription(/12–128 位/);
+  });
+
+  it("没有错误时不谎报无效，只关联规则提示", () => {
+    stubFetch({});
+    render(<SignUpForm onSuccess={vi.fn()} />);
+
+    const password = screen.getByLabelText("密码");
+    expect(password).toHaveAttribute("aria-invalid", "false");
+    expect(password).toHaveAttribute("aria-describedby", "password-hint");
+    expect(password).toHaveAccessibleDescription(/12–128 位/);
+  });
+
+  it("没有额外提示的字段，出错时也能关联到错误文案", async () => {
+    stubFetch({});
+    render(<SignUpForm onSuccess={vi.fn()} />);
+
+    await fillAndSubmit({ email: "a@example.com", password: "correct-horse-battery" });
+    await screen.findByText("请输入姓名");
+
+    expect(screen.getByLabelText("姓名")).toHaveAccessibleDescription(/请输入姓名/);
+  });
+});

@@ -162,3 +162,23 @@ describe("SignInForm 的错误分支", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 });
+
+describe("SignInForm 的异常恢复", () => {
+  it("成功回调抛异常时表单要能恢复，不能永久卡在提交中", async () => {
+    stubFetch({
+      "/sign-in/email": { status: 200, body: { token: "t", user: {} } },
+      "/get-session": anonymousSession,
+    });
+    const onSuccess = vi.fn(() => {
+      // 真实场景：跳转时 router.replace 抛了
+      throw new Error("navigation failed");
+    });
+    render(<SignInForm onSuccess={onSuccess} />);
+
+    await fillAndSubmit("a@example.com", "correct-horse-battery");
+
+    // 关键是"能恢复"：按钮回到可点，而不是永远禁用着让用户只能刷新页面
+    await waitFor(() => expect(screen.getByRole("button", { name: "登录" })).toBeEnabled());
+    expect(await screen.findByRole("alert")).toHaveTextContent("出现未知问题");
+  });
+});

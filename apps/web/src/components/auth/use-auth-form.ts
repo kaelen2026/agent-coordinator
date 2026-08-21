@@ -49,15 +49,25 @@ export const useAuthForm = <Input>({ schema, submit, operation, onSuccess }: Opt
 
       setState({ submitting: true, fieldErrors: {}, failure: null });
 
-      void submit(parsed.data).then((result) => {
-        if (result.ok) {
-          setState(IDLE);
-          onSuccess();
-          return;
+      // 整段包进 try/catch 而不是只挂 .catch：submit 若**同步**抛异常，`.catch` 根本
+      // 接不到，异常会从 handleSubmit 直接窜出去，submitting 永远停在 true——
+      // 按钮永久禁用且没有任何反馈，用户只能刷新页面才能恢复。
+      void (async () => {
+        try {
+          const result = await submit(parsed.data);
+          if (result.ok) {
+            setState(IDLE);
+            onSuccess();
+            return;
+          }
+          reportAuthFailure(operation, result.failure);
+          setState({ submitting: false, fieldErrors: {}, failure: result.failure });
+        } catch {
+          const failure: AuthFailure = { kind: "unexpected", status: 0 };
+          reportAuthFailure(operation, failure);
+          setState({ submitting: false, fieldErrors: {}, failure });
         }
-        reportAuthFailure(operation, result.failure);
-        setState({ submitting: false, fieldErrors: {}, failure: result.failure });
-      });
+      })();
     },
     [schema, submit, operation, onSuccess],
   );

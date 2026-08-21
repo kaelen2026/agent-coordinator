@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { FieldGroup } from "@/components/ui/field";
 import { signUp } from "@/lib/auth/actions";
-import { PASSWORD_MIN_LENGTH, signUpSchema } from "@/lib/auth/forms";
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, signUpSchema } from "@/lib/auth/forms";
 import { AuthField } from "./auth-field";
 import { FailureAlert } from "./failure-alert";
 import { useAuthForm } from "./use-auth-form";
@@ -41,7 +41,7 @@ export function SignUpForm({ onSuccess }: { onSuccess: () => void }) {
           aria-describedby="password-hint"
         />
         <p id="password-hint" className="text-muted-foreground text-sm">
-          至少 {PASSWORD_MIN_LENGTH} 位。
+          {PASSWORD_MIN_LENGTH}–{PASSWORD_MAX_LENGTH} 位。
         </p>
         <Button type="submit" disabled={blocked}>
           {state.submitting ? "注册中…" : "注册"}

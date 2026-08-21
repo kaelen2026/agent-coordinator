@@ -93,6 +93,16 @@
       }
     },
     {
+      "includes": ["apps/web/e2e/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    },
+    {
       "includes": ["apps/api/**", "apps/worker/**"],
       "linter": {
         "rules": {
