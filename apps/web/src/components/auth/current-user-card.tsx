@@ -4,7 +4,7 @@ import type { AuthUser } from "@agent-coordinator/contracts";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { fetchCurrentUser } from "@/lib/api/me";
 import type { AuthFailure } from "@/lib/auth/failure";
@@ -73,7 +73,9 @@ export function CurrentUserCard() {
           <AlertDescription>{authFailureMessage(state.failure)}</AlertDescription>
         </Alert>
         {state.failure.kind === "unauthenticated" ? (
-          <Button type="button" render={<Link href={SIGN_IN_PATH}>重新登录</Link>} />
+          <Link href={SIGN_IN_PATH} className={buttonVariants()}>
+            重新登录
+          </Link>
         ) : (
           <Button type="button" variant="outline" onClick={load}>
             重试

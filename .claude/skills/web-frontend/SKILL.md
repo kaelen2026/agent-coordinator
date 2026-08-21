@@ -56,6 +56,7 @@ components.json shadcn 配置；globals.css 是 Tailwind v4 的 @theme 主题源
 - `ui/` 内的文件视为受管代码：可调 className/变体，不改组件语义与 API；深度定制时另建业务组件包装。
 - Tailwind v4 是 CSS-first 配置：设计 token（颜色/圆角/间距）定义在 `globals.css` 的 `@theme`，组件里用语义 token 类（`bg-primary`），不散写字面量色值；无 `tailwind.config`，不要凭旧记忆创建。
 - 类名条件拼接一律 `cn()`（`src/lib/utils.ts`）；组件变体用 cva 建模，不用布尔 props 堆砌样式分支。
+- 导航链接要长成按钮时，用 `<Link className={buttonVariants({ variant })}>`，**不要** `<Button render={<Link/>}>`——Button 基于 Base UI 按钮语义（`nativeButton` 默认 true），换入 `<a>` 要么触发原生按钮告警、要么被加 `role="button"` 丢失链接语义（无法右键/新标签打开，测试也应断言 `role="link"`）。
 
 ## 步骤 5：测试
 
