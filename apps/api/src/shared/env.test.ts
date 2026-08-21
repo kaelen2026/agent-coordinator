@@ -119,6 +119,46 @@ describe("loadConfig", () => {
     });
   });
 
+  describe("origin and base url must carry an http(s) scheme", () => {
+    // zod 的 .url() 认 new URL("localhost:3000") 合法（protocol 变成 "localhost:"），
+    // 于是漏写 scheme 能通过启动校验，运行期 CORS 静默不回显 allow-origin，浏览器侧全挂。
+    it.each(["localhost:3000", "ftp://app.example.com", "javascript:alert(1)"])(
+      "rejects AUTH_TRUSTED_ORIGINS=%s",
+      (origin) => {
+        expect(() => loadConfig(env({ AUTH_TRUSTED_ORIGINS: origin }))).toThrow(
+          /AUTH_TRUSTED_ORIGINS/,
+        );
+      },
+    );
+
+    it("rejects_a_bad_entry_even_when_other_entries_are_fine", () => {
+      expect(() =>
+        loadConfig(env({ AUTH_TRUSTED_ORIGINS: "https://app.example.com, localhost:3000" })),
+      ).toThrow(/localhost:3000/);
+    });
+
+    it("accepts_http_and_https_origins", () => {
+      const config = loadConfig(
+        env({ AUTH_TRUSTED_ORIGINS: "http://localhost:3000, https://app.example.com" }),
+      );
+      expect(config.auth.trustedOrigins).toEqual([
+        "http://localhost:3000",
+        "https://app.example.com",
+      ]);
+    });
+
+    it.each(["localhost:3001", "ftp://api.example.com"])("rejects BETTER_AUTH_URL=%s", (url) => {
+      // baseURL 的 scheme 决定 cookie 的 Secure 标志，漏写 scheme 比 origins 更危险
+      expect(() => loadConfig(env({ BETTER_AUTH_URL: url }))).toThrow(/BETTER_AUTH_URL/);
+    });
+
+    it("accepts_an_https_base_url", () => {
+      expect(loadConfig(env({ BETTER_AUTH_URL: "https://api.example.com" })).auth.baseUrl).toBe(
+        "https://api.example.com",
+      );
+    });
+  });
+
   it("turns_on_cross_site_cookie_attributes_only_when_asked", () => {
     expect(loadConfig(env()).auth.crossSiteCookies).toBe(false);
     expect(loadConfig(env({ AUTH_COOKIE_CROSS_SITE: "true" })).auth.crossSiteCookies).toBe(true);

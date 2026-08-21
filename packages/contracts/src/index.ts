@@ -54,8 +54,18 @@ export type MeResponse = z.infer<typeof meResponseSchema>;
 // | 请求体不是 JSON          | 400    | BAD_REQUEST                             | —                   |
 // | 密码错 / 账号不存在      | 401    | INVALID_EMAIL_OR_PASSWORD               | —（两者响应完全相同）|
 // | 不可信 Origin            | 403    | INVALID_ORIGIN                          | —                   |
+// | **缺失 Origin 头**       | 403    | MISSING_OR_NULL_ORIGIN                  | —                   |
 // | 重复邮箱                 | 422    | USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL   | —                   |
 // | better-auth 限流         | 429    | （无 code）                              | `X-Retry-After: 10` |
+//
+// ⚠️ **凡是带凭证的服务端转发，必须显式设 `Origin`**。浏览器 fetch 会自动带，但
+// Next.js 的 Server Action / Route Handler / 服务端 `fetch` **默认不带**，从服务端转发
+// 登出或任何 `/api/auth/*` 写操作会直接吃 403 `MISSING_OR_NULL_ORIGIN`（实测过）。
+// 设的值必须在 api 的 `AUTH_TRUSTED_ORIGINS` 白名单里，否则变成 403 `INVALID_ORIGIN`。
+//
+// ⚠️ **`/api/auth/*` 的 429 响应头写的是 `content-type: text/plain;charset=UTF-8`，
+// 但 body 其实是 JSON**（其余分支都是 `application/json`）。`fetch().json()` 不受影响，
+// 但 axios 这类按 content-type 决定解析方式的客户端会拿到字符串，需要自己再 parse。
 //
 // 自有端点（`apiErrorSchema`）对照：
 // | 未登录                   | 401    | UNAUTHENTICATED                         | —                   |

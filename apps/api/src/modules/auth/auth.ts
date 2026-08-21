@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { CLIENT_IP_HEADER } from "../../shared/client-ip.js";
 import type { Db } from "../../shared/db.js";
+import { createAuthLogger } from "./logger.js";
 import * as schema from "./schema.js";
 import type { SessionUser } from "./service.js";
 
@@ -31,6 +32,8 @@ export type AuthConfig = {
 export const createAuth = (db: Db, config: AuthConfig) =>
   betterAuth({
     database: drizzleAdapter(db, { provider: "pg", schema }),
+    // 默认 logger 会把 drizzle 错误里的查询参数（含会话 token）原样打进日志
+    logger: createAuthLogger(),
     secret: config.secret,
     baseURL: config.baseUrl,
     basePath: AUTH_BASE_PATH,

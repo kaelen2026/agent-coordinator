@@ -4,9 +4,9 @@ import {
   betterAuthErrorSchema,
   meResponseSchema,
 } from "@agent-coordinator/contracts";
-import { inArray } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import type { Pool } from "pg";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { type AppDeps, createApp } from "../../app.js";
 import { CLIENT_IP_HEADER } from "../../shared/client-ip.js";
@@ -268,6 +268,20 @@ describe("cross-origin protection", () => {
   it("still_accepts_the_same_request_from_a_trusted_origin", async () => {
     expect((await signUp(freshEmail())).status).toBe(200);
   });
+
+  it("rejects_a_credentialed_request_that_carries_no_origin_at_all", async () => {
+    // 浏览器一定会带 Origin，但 Next.js 的 Server Action / 服务端 fetch 默认不带——
+    // 切片 2 从服务端转发登出会直接吃这个 403，契约表里必须有它。
+    const cookie = cookieFrom(await signUp(freshEmail()));
+    const res = await app.request(url("/api/auth/sign-out"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: "{}",
+    });
+
+    expect(res.status).toBe(403);
+    expect(betterAuthErrorSchema.parse(await res.json()).code).toBe("MISSING_OR_NULL_ORIGIN");
+  });
 });
 
 describe("rate limiting", () => {
@@ -323,6 +337,25 @@ describe("rate limiting", () => {
     expect(signInBuckets).toEqual(["203.0.113.50|/sign-in/email"]);
   });
 
+  it("labels_the_auth_rate_limit_response_as_text_plain_even_though_it_is_json", async () => {
+    // 契约里写明了这条，钉住它：better-auth 升级后要是改了，web 端的解析假设会跟着变
+    const email = freshEmail();
+    let limited: Response | undefined;
+    for (let i = 0; i < 6 && limited === undefined; i += 1) {
+      const res = await signIn(email, "wrong-password", asClient("203.0.113.60"), behindProxy);
+      if (res.status === 429) {
+        limited = res;
+      }
+    }
+
+    if (limited === undefined) {
+      throw new Error("expected better-auth to rate limit within 6 attempts");
+    }
+    expect(limited.headers.get("content-type")).toMatch(/text\/plain/);
+    // 头说 text/plain，body 其实是 JSON——按 content-type 解析的客户端会拿到字符串
+    expect(betterAuthErrorSchema.parse(JSON.parse(await limited.text())).code).toBeUndefined();
+  });
+
   it("keeps_the_auth_rate_limit_counters_in_the_database", async () => {
     await signIn(freshEmail(), "wrong-password", asClient("203.0.113.9"), behindProxy);
     const rows = await db.select().from(rateLimit);
@@ -357,5 +390,57 @@ describe("rate limiting", () => {
     }
     expect((await get("/api/me", asClient("203.0.113.31"), tight)).status).toBe(429);
     expect((await get("/api/me", asClient("198.51.100.32"), tight)).status).toBe(401);
+  });
+});
+
+describe("dependency failure", () => {
+  /** 把 session 表改名，制造一次干净的"只有这条查询失败"的数据库故障。 */
+  const breakSessionTable = async (): Promise<void> => {
+    await db.execute(sql`alter table "session" rename to "session_fault_injection"`);
+  };
+  const repairSessionTable = async (): Promise<void> => {
+    await db.execute(sql`alter table if exists "session_fault_injection" rename to "session"`);
+  };
+
+  it("never_writes_the_session_token_to_the_log_when_the_database_fails", async () => {
+    // drizzle 把绑定参数拼进 error.message，而查会话走的正是 `where "token" = $1`；
+    // better-auth 的默认 logger 会把它原样打出来 —— 数据库一抖动就是成批的 token 进日志。
+    const cookie = cookieFrom(await signUp(freshEmail()));
+    const [tokenId = ""] = decodeURIComponent(
+      cookie.split("better-auth.session_token=")[1] ?? "",
+    ).split(".");
+    // 先确认真的拿到了 token，否则下面的"没出现"是废断言
+    expect(tokenId).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+
+    const captured: string[] = [];
+    const spies = (["log", "error", "warn", "info", "debug"] as const).map((level) =>
+      vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+        captured.push(args.map((arg) => String(arg)).join(" "));
+      }),
+    );
+
+    let body = "";
+    try {
+      await breakSessionTable();
+      const res = await get("/api/me", { cookie });
+      body = await res.text();
+      expect(res.status).toBe(500);
+    } finally {
+      await repairSessionTable();
+      for (const spy of spies) {
+        spy.mockRestore();
+      }
+    }
+
+    // 确实走到了故障路径并记了日志——否则"日志里没有 token"会因为根本没日志而假绿
+    expect(captured.join("\n")).toMatch(/better-auth|unhandled error/);
+
+    expect(captured.filter((line) => line.includes(tokenId))).toEqual([]);
+    expect(body).not.toContain(tokenId);
+  });
+
+  it("keeps_serving_normally_once_the_database_recovers", async () => {
+    const cookie = cookieFrom(await signUp(freshEmail()));
+    expect((await get("/api/me", { cookie })).status).toBe(200);
   });
 });

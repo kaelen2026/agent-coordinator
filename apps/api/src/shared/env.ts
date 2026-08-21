@@ -11,6 +11,18 @@ const boolFlag = z
   .default("false")
   .transform((value) => value === "true");
 
+// zod 的 .url() 只要求 `new URL()` 能解析，而 `new URL("localhost:3000")` 是合法的
+// （protocol 变成 "localhost:"），`javascript:` / `ftp:` 同理。漏写 scheme 能通过启动校验，
+// 运行期 CORS 静默不回显 allow-origin、cookie 的 Secure 判断也会错，所以在这里就卡死。
+const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
+
+const isHttpUrl = (value: string): boolean =>
+  URL.canParse(value) && HTTP_PROTOCOLS.has(new URL(value).protocol);
+
+const httpUrl = z
+  .string()
+  .refine(isHttpUrl, { message: "must be an http(s) URL including the scheme" });
+
 // 部署系统里"变量设成空串"和"变量没设"是一回事，都按未声明处理
 const optional = <T extends z.ZodTypeAny>(schema: T) =>
   z.preprocess(
@@ -37,7 +49,7 @@ const envSchema = z.object({
   // 无默认值：缺失即启动失败。密钥只来自环境，不进代码/配置/夹具（security.md）
   BETTER_AUTH_SECRET: z.string().min(32),
   // 下面三个在生产没有默认值——兜底成开发值的后果见 loadConfig 里的 requireInProduction
-  BETTER_AUTH_URL: optional(z.string().url()),
+  BETTER_AUTH_URL: optional(httpUrl),
   AUTH_TRUSTED_ORIGINS: optional(z.string()),
   AUTH_TRUSTED_PROXIES: optional(z.string()),
   // web 与 api 不同站点时必须开：cookie 需要 SameSite=None; Secure; Partitioned
@@ -73,9 +85,12 @@ type Issue = { variable: string; reason: string };
 
 const parseTrustedOrigins = (raw: string, issues: Issue[]): string[] => {
   const origins = csvItems(raw);
-  const invalid = origins.filter((origin) => !z.string().url().safeParse(origin).success);
+  const invalid = origins.filter((origin) => !isHttpUrl(origin));
   if (invalid.length > 0) {
-    issues.push({ variable: "AUTH_TRUSTED_ORIGINS", reason: `not a URL: ${invalid.join(", ")}` });
+    issues.push({
+      variable: "AUTH_TRUSTED_ORIGINS",
+      reason: `must be http(s) URLs including the scheme: ${invalid.join(", ")}`,
+    });
   }
   if (origins.length === 0) {
     issues.push({ variable: "AUTH_TRUSTED_ORIGINS", reason: "must list at least one origin" });
