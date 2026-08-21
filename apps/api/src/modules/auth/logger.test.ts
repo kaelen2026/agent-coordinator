@@ -1,58 +1,74 @@
-import { describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
+import type { Pool } from "pg";
+import { afterAll, describe, expect, it } from "vitest";
+import { createDb, createPool, type Db } from "../../shared/db.js";
+import { loadConfig } from "../../shared/env.js";
 import { createAuthLogger } from "./logger.js";
 
-const SECRET = "fDmcrcCaM0cro3n0JJOd82lpCv2YBLH7";
+// 用**真实触发**的错误，不用手工构造的假错误：上一轮的假错误手填了
+// `name: "DrizzleQueryError"`，而真实对象的类型名要从 constructor 上取，
+// 结果单测绿、线上拿到的却是 causes:["Error"]，承诺没兑现。
+const config = loadConfig();
+const pool: Pool = createPool(config.db);
+const db: Db = createDb(pool);
 
-/** 仿造 drizzle 的查询错误：绑定参数同时藏在 message、自有属性和 cause 链里。 */
-const makeQueryError = (): Error =>
-  Object.assign(new Error(`Failed query: select "token" from "session" where "token" = $1`), {
-    name: "DrizzleQueryError",
-    query: 'select "token" from "session" where "token" = $1',
-    params: [SECRET],
-    cause: new Error(`bind parameter ${SECRET}`),
-  });
+const SECRET = "logger-victim@example.test";
+
+const realQueryError = async (): Promise<unknown> => {
+  try {
+    await db.execute(sql`select 1 from "no_such_table_here" where "email" = ${SECRET}`);
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected the query to fail");
+};
 
 const capture = (): { lines: string[]; logger: ReturnType<typeof createAuthLogger> } => {
   const lines: string[] = [];
   return { lines, logger: createAuthLogger((line) => lines.push(line)) };
 };
 
+afterAll(async () => {
+  await pool.end();
+});
+
 describe("createAuthLogger", () => {
-  it("never_emits_values_carried_by_a_library_error", () => {
+  it("never emits values carried by a real driver error", async () => {
     const { lines, logger } = capture();
 
-    logger.log("error", "INTERNAL_SERVER_ERROR", makeQueryError());
+    logger.log("error", "INTERNAL_SERVER_ERROR", await realQueryError());
     const out = lines.join("\n");
 
-    // 不是针对 token 特判：错误里**任何**携带值的部分都不该出现
     expect(out).not.toContain(SECRET);
-    expect(out).not.toContain("select");
-    expect(out).not.toContain("bind parameter");
+    expect(out).not.toContain("params:");
+    expect(out).not.toContain("no_such_table_here");
   });
 
-  it("still_keeps_enough_to_locate_the_failure", () => {
+  it("reports the real error type and postgres error code", async () => {
     const { lines, logger } = capture();
 
-    logger.log("error", "INTERNAL_SERVER_ERROR", makeQueryError());
+    logger.log("error", "INTERNAL_SERVER_ERROR", await realQueryError());
     const out = lines.join("\n");
 
-    // 脱敏不能脱成一片空白，否则线上无从定位
+    // 这三样才是排障要的：库自己的 message + 真实类型链 + 结构化错误码
     expect(out).toContain("INTERNAL_SERVER_ERROR");
     expect(out).toContain("DrizzleQueryError");
-    expect(out).toContain('"level":"error"');
+    expect(out).toContain("DatabaseError");
+    expect(out).toContain("42P01");
   });
 
-  it("does_not_emit_values_carried_by_non_error_args", () => {
+  it("reduces object and array args to their type name", () => {
     const { lines, logger } = capture();
 
-    logger.log("warn", "SOMETHING", { token: SECRET }, SECRET, [SECRET]);
+    logger.log("warn", "SOMETHING", { token: SECRET }, [SECRET]);
     const out = lines.join("\n");
 
     expect(out).not.toContain(SECRET);
+    expect(out).not.toContain("token");
     expect(out).toContain("SOMETHING");
   });
 
-  it("emits_one_json_line_per_call_so_log_pipelines_can_parse_it", () => {
+  it("emits one json line per call so log pipelines can parse it", () => {
     const { lines, logger } = capture();
 
     logger.log("info", "hello");

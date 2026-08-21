@@ -31,7 +31,10 @@ export type AuthConfig = {
 /** 在进程入口构造一次；密码哈希、会话、限流全部交给 better-auth，不自行实现。 */
 export const createAuth = (db: Db, config: AuthConfig) =>
   betterAuth({
-    database: drizzleAdapter(db, { provider: "pg", schema }),
+    // debugLogs 保持关闭。实测当前版本开了也不打邮箱等凭证，但它走的是
+    // `console.log(...log)` 的**字符串**形态，console 防护看不进字符串内部；
+    // 形态一旦随升级变化就会绕过防护，所以显式钉死为 false（纵深防御，无测试覆盖）。
+    database: drizzleAdapter(db, { provider: "pg", schema, debugLogs: false }),
     // 默认 logger 会把 drizzle 错误里的查询参数（含会话 token）原样打进日志
     logger: createAuthLogger(),
     secret: config.secret,

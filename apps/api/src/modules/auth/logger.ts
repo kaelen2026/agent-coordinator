@@ -1,21 +1,9 @@
+import { describeError } from "../../shared/log-redaction.js";
+
 /** better-auth 交给日志回调的级别（它的 "success" 会被归一成 "info"）。 */
 export type AuthLogLevel = "debug" | "info" | "warn" | "error";
 
 export type AuthLogSink = (line: string) => void;
-
-/** 库自己写的 message 之外，一律不落任何携带值的内容——见下方说明。 */
-const describeArg = (arg: unknown): string => {
-  if (arg instanceof Error) {
-    return arg.name;
-  }
-  if (arg === null) {
-    return "null";
-  }
-  if (typeof arg === "object") {
-    return arg.constructor?.name ?? "object";
-  }
-  return typeof arg;
-};
 
 /**
  * better-auth 的日志出口。
@@ -44,7 +32,7 @@ export const createAuthLogger = (sink: AuthLogSink = console.error) => ({
         msg: "better-auth",
         level,
         detail: message,
-        ...(args.length === 0 ? {} : { causes: args.map(describeArg) }),
+        ...(args.length === 0 ? {} : { causes: args.map((arg) => describeError(arg)) }),
       }),
     );
   },

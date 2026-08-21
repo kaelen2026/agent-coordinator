@@ -4,7 +4,7 @@ import {
   betterAuthErrorSchema,
   meResponseSchema,
 } from "@agent-coordinator/contracts";
-import { inArray, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -12,10 +12,11 @@ import { type AppDeps, createApp } from "../../app.js";
 import { CLIENT_IP_HEADER } from "../../shared/client-ip.js";
 import { createDb, createPool, type Db } from "../../shared/db.js";
 import { type AppConfig, loadConfig } from "../../shared/env.js";
+import { installConsoleRedaction } from "../../shared/log-redaction.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { apiRateLimit } from "../../shared/rate-limit.schema.js";
 import { createAuth } from "./auth.js";
-import { rateLimit, user } from "./schema.js";
+import { account, rateLimit, user } from "./schema.js";
 
 // 打真实 Postgres（compose.yaml 起的实例），不 mock 数据库。
 // 每个测试自建自清数据：邮箱随机、结束删自己建的 user（session/account 级联删除）。
@@ -394,52 +395,149 @@ describe("rate limiting", () => {
 });
 
 describe("dependency failure", () => {
-  /** 把 session 表改名，制造一次干净的"只有这条查询失败"的数据库故障。 */
-  const breakSessionTable = async (): Promise<void> => {
-    await db.execute(sql`alter table "session" rename to "session_fault_injection"`);
-  };
-  const repairSessionTable = async (): Promise<void> => {
-    await db.execute(sql`alter table if exists "session_fault_injection" rename to "session"`);
+  const CONSOLE_LEVELS = ["error", "warn", "log", "info", "debug", "trace"] as const;
+
+  /**
+   * 把某张表改名，制造"只有依赖这张表的查询失败"的干净故障。
+   * 三条路径都要覆盖：session 上的错误被 better-auth 包成 APIError 走 onError，
+   * user / account 上的是裸抛，落到 better-call 里那句硬编码的 console.error——
+   * 后者 logger 配置完全管不到，上一轮只测 session 所以假绿。
+   */
+  const withBrokenTable = async (table: string, act: () => Promise<void>): Promise<void> => {
+    await db.execute(
+      sql`alter table ${sql.identifier(table)} rename to ${sql.identifier(`${table}_fault`)}`,
+    );
+    try {
+      await act();
+    } finally {
+      await db.execute(
+        sql`alter table if exists ${sql.identifier(`${table}_fault`)} rename to ${sql.identifier(table)}`,
+      );
+    }
   };
 
-  it("never_writes_the_session_token_to_the_log_when_the_database_fails", async () => {
-    // drizzle 把绑定参数拼进 error.message，而查会话走的正是 `where "token" = $1`；
-    // better-auth 的默认 logger 会把它原样打出来 —— 数据库一抖动就是成批的 token 进日志。
-    const cookie = cookieFrom(await signUp(freshEmail()));
+  /** 禁列（security.md）：token、密码、哈希、完整邮箱，一个都不许进日志。 */
+  const collectSecrets = async (
+    email: string,
+    cookie: string,
+  ): Promise<{ label: string; value: string }[]> => {
     const [tokenId = ""] = decodeURIComponent(
       cookie.split("better-auth.session_token=")[1] ?? "",
     ).split(".");
-    // 先确认真的拿到了 token，否则下面的"没出现"是废断言
+    const [owner] = await db.select().from(user).where(eq(user.email, email));
+    const [credential] = await db
+      .select()
+      .from(account)
+      .where(eq(account.userId, owner?.id ?? ""));
+    const hash = credential?.password ?? "";
+
+    // 先确认这些值真的拿到了，否则下面的"没出现"全是废断言
     expect(tokenId).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+    expect(hash.length).toBeGreaterThan(16);
 
+    return [
+      { label: "session token", value: tokenId },
+      { label: "email", value: email },
+      { label: "password", value: PASSWORD },
+      { label: "password hash", value: hash },
+    ];
+  };
+
+  /**
+   * 在防护生效的前提下收集所有 console 输出。
+   * 防护装在 spy **外面**（库 → 防护 → 出口），与生产里的层次一致；
+   * 被测的 app 在防护装好之后才构造——better-auth 的 logger sink 是构造时就绑定的，
+   * 生产里 index.ts 也是先装防护再造依赖。
+   */
+  const captureConsole = async (act: (target: ReturnType<typeof makeApp>) => Promise<void>) => {
     const captured: string[] = [];
-    const spies = (["log", "error", "warn", "info", "debug"] as const).map((level) =>
-      vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
-        captured.push(args.map((arg) => String(arg)).join(" "));
-      }),
+    const record = (...args: unknown[]): void => {
+      captured.push(
+        args.map((arg) => (typeof arg === "string" ? arg : (JSON.stringify(arg) ?? ""))).join(" "),
+      );
+    };
+    const spies = CONSOLE_LEVELS.map((level) =>
+      vi.spyOn(console, level).mockImplementation(record),
     );
-
-    let body = "";
+    const restoreGuard = installConsoleRedaction();
     try {
-      await breakSessionTable();
-      const res = await get("/api/me", { cookie });
-      body = await res.text();
-      expect(res.status).toBe(500);
+      await act(makeApp({ auth: createAuth(db, config.auth) }));
     } finally {
-      await repairSessionTable();
+      restoreGuard();
       for (const spy of spies) {
         spy.mockRestore();
       }
     }
+    return captured;
+  };
 
-    // 确实走到了故障路径并记了日志——否则"日志里没有 token"会因为根本没日志而假绿
-    expect(captured.join("\n")).toMatch(/better-auth|unhandled error/);
+  it.each([
+    { table: "session", endpoint: "me" },
+    { table: "user", endpoint: "signIn" },
+    { table: "account", endpoint: "signIn" },
+  ])(
+    "keeps credentials out of the log when the $table table is unavailable",
+    async ({ table, endpoint }) => {
+      const email = freshEmail();
+      const cookie = cookieFrom(await signUp(email));
+      const secrets = await collectSecrets(email, cookie);
 
-    expect(captured.filter((line) => line.includes(tokenId))).toEqual([]);
-    expect(body).not.toContain(tokenId);
-  });
+      let status = 0;
+      let body = "";
+      const captured = await captureConsole(async (target) => {
+        await withBrokenTable(table, async () => {
+          const res =
+            endpoint === "me"
+              ? await get("/api/me", { cookie }, target)
+              : await signIn(email, PASSWORD, {}, target);
+          status = res.status;
+          body = await res.text();
+        });
+      });
 
-  it("keeps_serving_normally_once_the_database_recovers", async () => {
+      // 确实走到了故障路径并确实记了日志——否则"没有敏感值"会因为根本没日志而假绿
+      expect(status).toBe(500);
+      expect(captured.join("")).not.toBe("");
+
+      const log = captured.join("\n");
+      for (const secret of secrets) {
+        expect(`${secret.label} in log: ${log.includes(secret.value)}`).toBe(
+          `${secret.label} in log: false`,
+        );
+        expect(`${secret.label} in body: ${body.includes(secret.value)}`).toBe(
+          `${secret.label} in body: false`,
+        );
+      }
+
+      // drizzle 把绑定参数拼在 message 里，`params:` 是它的标志，一并挡掉
+      expect(log).not.toContain("params:");
+    },
+  );
+
+  it.each(["session", "user"])(
+    "still records what broke when the %s table is unavailable",
+    async (table) => {
+      // 脱敏不能脱成一片空白：42P01 = undefined_table，是 Postgres 的结构化错误码，
+      // 不含用户数据，正是"数据库挂了 vs 代码有 bug"的判据
+      const email = freshEmail();
+      const cookie = cookieFrom(await signUp(email));
+
+      const captured = await captureConsole(async (target) => {
+        await withBrokenTable(table, async () => {
+          if (table === "session") {
+            await get("/api/me", { cookie }, target);
+          } else {
+            await signIn(email, PASSWORD, {}, target);
+          }
+        });
+      });
+
+      expect(captured.join("\n")).toContain("DatabaseError");
+      expect(captured.join("\n")).toContain("42P01");
+    },
+  );
+
+  it("keeps serving normally once the database recovers", async () => {
     const cookie = cookieFrom(await signUp(freshEmail()));
     expect((await get("/api/me", { cookie })).status).toBe(200);
   });

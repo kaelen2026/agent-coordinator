@@ -5,6 +5,7 @@ import { z } from "zod";
 import { type ClientIpEnv, UNKNOWN_CLIENT_IP } from "./client-ip.js";
 import type { Db } from "./db.js";
 import { AppError } from "./errors.js";
+import { describeError } from "./log-redaction.js";
 import { apiRateLimit } from "./rate-limit.schema.js";
 
 export type RateLimitRule = { windowSeconds: number; max: number };
@@ -104,7 +105,7 @@ export const createRateLimiter = (db: Db, options: RateLimiterOptions = {}): Rat
         console.error(
           JSON.stringify({
             msg: "rate limit cleanup failed, retrying next interval",
-            error: error instanceof Error ? error.message : "unknown",
+            error: describeError(error),
           }),
         );
       }
