@@ -31,6 +31,7 @@ Web 端所有界面工作的唯一视觉约束来源。新页面、新组件、�
 | `--accent` | `oklch(1 0 0 / 6%)` | hover 填充 |
 | `--accent-foreground` | `oklch(0.93 0.005 200)` | hover 填充上的文字 |
 | `--destructive` | `oklch(0.62 0.19 25)` | 破坏性操作 |
+| `--destructive-foreground` | `oklch(0.16 0.05 25)` | 破坏性填充上的文字（深红黑，对比度 4.9:1） |
 | `--border` | `oklch(1 0 0 / 8%)` | 标准边框 |
 | `--input` | `oklch(1 0 0 / 10%)` | 输入框边框 |
 | `--ring` | `oklch(0.78 0.15 155)` | 焦点环（= primary） |
@@ -60,6 +61,7 @@ Web 端所有界面工作的唯一视觉约束来源。新页面、新组件、�
 | `--secondary` / `--muted` / `--accent` | `oklch(0.93 0.005 200)` |
 | `--muted-foreground` | `oklch(0.50 0.01 200)` |
 | `--destructive` | `oklch(0.55 0.20 25)` |
+| `--destructive-foreground` | `oklch(0.98 0.01 25)` |
 | `--border` | `oklch(0.90 0.005 200)` |
 | `--input` | `oklch(0.87 0.005 200)` |
 | `--ring` | `oklch(0.55 0.15 155)` |
@@ -102,7 +104,7 @@ Web 端所有界面工作的唯一视觉约束来源。新页面、新组件、�
 - default：`bg-primary text-primary-foreground`，hover 明度升一档（`hover:bg-primary/90`），radius `--radius-md`。
 - outline：透明底 + `border-input`，hover `bg-accent`。
 - ghost：透明底，hover `bg-accent`。
-- destructive：`bg-destructive`。
+- destructive：`bg-destructive text-destructive-foreground`。
 - disabled：opacity 50%，禁用指针。
 
 **Card**：`bg-card` + `border border-border`，radius `--radius-lg`，暗色下无投影（抬升靠白色透明度台阶），浅色下白底 + 标准阴影。

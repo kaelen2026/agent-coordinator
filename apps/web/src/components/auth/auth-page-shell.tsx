@@ -14,7 +14,7 @@ export function AuthPageShell({
   footer?: ReactNode;
 }) {
   return (
-    <main className="mx-auto flex min-h-svh w-full max-w-md flex-col justify-center p-6">
+    <main className="mx-auto flex min-h-svh w-full max-w-md flex-col justify-center p-4 md:p-6">
       <Card>
         <CardHeader>
           {/* 页面标题：mono 20px 600（CardTitle 已是 font-heading + font-semibold） */}
