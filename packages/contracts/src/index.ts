@@ -116,6 +116,14 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // 服务端开了 `requireSignature`，只接受带签名的完整 token——把签名去掉、只留裸的会话 id
 // 会被当成无效凭证（401）。这是有意的：裸 id 一旦从库/备份/日志漏出来就能冒充用户。
 //
+// ⚠️ 「不要 URL 编解码」这条读起来像"编码了就会失败"，实际不是：**服务端当前会容忍百分号编码**
+// （bearer 被翻译成会话 cookie 后走 cookie 解析，顺手解掉一层），`encodeURIComponent(token)`
+// 发过去照样 200。但这是**当前观测到的宽容度，不是契约承诺**——客户端不要依赖它，必须原样透传。
+// 依赖它的代价：客户端不可热修，而这是个"错了也不报错"的坑（开发期一切正常），
+// better-auth 哪天不再解码就是全量登出。宽容度本身由
+// `currently_tolerates_a_percent_encoded_token_but_the_contract_still_says_pass_it_through`
+// 钉住当前行为，它变了 CI 会先红——那条测试记录的是"今天的观测"，不是我们对客户端的承诺。
+//
 // **3. 怎么带、哪些端点接受**
 //
 // `Authorization: Bearer <token>`。接受范围：
@@ -138,6 +146,10 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // | 不发（URLSession 默认）              | 200                  | 200                | 200           |
 // | api 自己的源（=`BETTER_AUTH_URL`）   | 200                  | 200                | 200           |
 // | 自己编的（`http://evil.example.com`）| 403 `INVALID_ORIGIN` | 200                | 200           |
+//
+// ⚠️ 第一行（"不发 Origin"）成立的前提是**一个 `Sec-Fetch-*` 都不发**——这正是上面 b 分支的
+// 触发条件之一。只发 `Sec-Fetch-*` 不发 `Origin` 会吃 403 `MISSING_OR_NULL_ORIGIN`，
+// 详见第 5 节错误分支表。
 //
 // 9 格逐格由 `auth.integration.test.ts` 断言钉住（"不发"与"不可信"两行在
 // `origin requirements for native clients` 里，"api 自己的源"那一行由 bearer 各测试用 `NATIVE`
@@ -172,6 +184,16 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // | `/api/me` 完全不带凭证                              | 401    | `apiErrorSchema` `UNAUTHENTICATED`       |
 // | `sign-out` 带已失效的 token                         | 200    | 幂等成功，不下发新 token                 |
 // | `sign-up`/`sign-in` 发了不可信 Origin               | 403    | `betterAuthErrorSchema` `INVALID_ORIGIN` |
+// | `sign-up`/`sign-in` 发了 `Sec-Fetch-*` 但没发 Origin| 403    | `betterAuthErrorSchema` `MISSING_OR_NULL_ORIGIN` |
+//
+// ⚠️ 上表最后一行是**最容易被自己的 HTTP 层坑到**的一格：`Sec-Fetch-*` 也算"这是浏览器发的"
+// 信号（见第 4 节的 b 分支），一旦带上它，Origin 就从"可以不发"变成"必须发且必须可信"。
+// **任何会自动补 `Sec-Fetch-*` 的 HTTP 层都必须同时发 `Origin`**：Node/undici 的内置 `fetch`
+// 默认就补 `sec-fetch-mode: cors`（用它写的集成脚本会全量 403），WKWebView 同理。
+// `URLSession` 不发 `Sec-Fetch-*`，所以第 4 节矩阵第一行对 iOS 仍然成立；而按第 4 节 ✅ 那条建议
+// 固定发 `Origin: <BETTER_AUTH_URL 的源>`，本来就顺带把这一格规避掉了。
+// 由 `origin requirements for native clients` 的
+// `rejects_sign_in_that_sends_sec_fetch_headers_but_no_origin` 钉住。
 //
 // ⚠️ 上表第一行和第二行的响应**逐字节相同**：服务端不告诉你 token 是"签名错"还是"会话没了"
 // 还是"根本没发"（`security.md`）。客户端拿到 401 的唯一正确反应是：清掉 Keychain 里的

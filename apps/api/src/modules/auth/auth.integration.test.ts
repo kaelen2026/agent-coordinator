@@ -113,7 +113,9 @@ const tokenFrom = (res: Response): string => res.headers.get(SESSION_TOKEN_HEADE
 /**
  * `set-auth-token` 的形状：`<会话 id>.<HMAC 签名>`，签名是**标准** base64
  * （会出现 `+` `/` 和末尾的 `=` 填充）。契约里写死了它，因为客户端必须原样透传——
- * 任何 URL 编解码、trim、按 `.` 截断都会让 token 失效。
+ * trim、按 `.` 截断都会让 token 失效。（URL 编码是唯一的例外：服务端当前会容忍，
+ * 但那只是观测到的宽容度、不是承诺，见
+ * `currently_tolerates_a_percent_encoded_token_but_the_contract_still_says_pass_it_through`。）
  */
 const TOKEN_FORMAT = /^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9+/]{16,}={0,2}$/;
 
@@ -331,6 +333,25 @@ describe("bearer token auth for native clients", () => {
     expect(token).toMatch(TOKEN_FORMAT);
   });
 
+  it("currently_tolerates_a_percent_encoded_token_but_the_contract_still_says_pass_it_through", async () => {
+    // 钉住的是**当前观测到的宽容行为，不是我们承诺的契约**——契约要求客户端原样透传 token。
+    // 之所以要钉：这是个"错了也不报错"的坑（bearer 被翻译成 cookie 后走 cookie 解析，
+    // 顺手把百分号编码解掉了），iOS 若误加 encodeURIComponent，开发期一切正常。客户端不可热修，
+    // 等 better-auth 收紧这个宽容度就是全量登出。有这条测试，收紧时 CI 先红。
+    const email = freshEmail();
+    const token = tokenFrom(await signUp(email, PASSWORD, NATIVE));
+    const encoded = encodeURIComponent(token);
+    // 先确认这次真编码掉了东西（签名是标准 base64，`+` `/` `=` 都会被转义）——
+    // 否则下面的 200 只是把原样 token 又发了一遍，属于假绿。
+    expect(encoded).not.toBe(token);
+    expect(encoded).toContain("%");
+
+    const res = await get("/api/me", { ...NATIVE, bearer: encoded });
+
+    expect(res.status).toBe(200);
+    expect(meResponseSchema.parse(await res.json()).user.email).toBe(email);
+  });
+
   it("sign_in_hands_the_native_client_a_session_token_in_a_response_header", async () => {
     const email = freshEmail();
     await signUp(email, PASSWORD, NATIVE);
@@ -494,6 +515,29 @@ describe("origin requirements for native clients", () => {
 
     expect(res.status).toBe(200);
     expect(tokenFrom(res)).not.toBe("");
+  });
+
+  it("rejects_sign_in_that_sends_sec_fetch_headers_but_no_origin", async () => {
+    // 契约 Origin 矩阵第一行（"不发 Origin → 200"）只在**一个 `Sec-Fetch-*` 都不发**时成立：
+    // better-auth 的 formCsrfMiddleware 把 `Sec-Fetch-*` 也当成"这是浏览器发的"信号，于是
+    // 强制要求 Origin，缺了就 403 MISSING_OR_NULL_ORIGIN。
+    // 这一格必须有测试：Node/undici 的内置 fetch **默认就补 `sec-fetch-mode`**（WKWebView 同理），
+    // 拿它写的集成脚本会全量吃 403 却看不出原因。URLSession 不发 `Sec-Fetch-*`，所以矩阵第一行
+    // 对 iOS 仍然成立——但 better-auth 一旦把这个触发条件放宽到"任何请求"，这条会先红。
+    const email = freshEmail();
+    await signUp(email, PASSWORD, noOrigin);
+
+    const res = await app.request(url("/api/auth/sign-in/email"), {
+      method: "POST",
+      // 刻意只有 Sec-Fetch-Mode、没有 Origin / Referer / Cookie
+      headers: { "Content-Type": "application/json", "Sec-Fetch-Mode": "cors" },
+      body: JSON.stringify({ email, password: PASSWORD }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(betterAuthErrorSchema.parse(await res.json()).code).toBe("MISSING_OR_NULL_ORIGIN");
+    // 对照：同一个请求去掉 Sec-Fetch-Mode 就是 200。少了这一句，上面的 403 也可能是别的原因。
+    expect((await signIn(email, PASSWORD, noOrigin)).status).toBe(200);
   });
 
   it("accepts_sign_out_with_a_bearer_token_and_no_origin_header", async () => {
