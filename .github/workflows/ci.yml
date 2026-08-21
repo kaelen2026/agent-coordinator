@@ -18,6 +18,28 @@ jobs:
     name: format + lint + commit message
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    # 集成测试打真实 Postgres（不 mock 数据库），镜像与本地 compose.yaml 一致
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agent_coordinator
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d agent_coordinator"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/agent_coordinator
+      BETTER_AUTH_URL: http://localhost:3001
+      AUTH_TRUSTED_ORIGINS: http://localhost:3000
+
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,6 +68,13 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      # 每次 run 现生成、用完即弃：仓库和 secrets 里都不需要存这个值
+      - name: Generate ephemeral auth secret
+        run: echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Migrate database
+        run: pnpm --filter=@agent-coordinator/api db:migrate
 
       - name: Test
         run: pnpm test

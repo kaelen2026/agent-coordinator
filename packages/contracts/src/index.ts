@@ -17,3 +17,22 @@ export const healthResponseSchema = z.object({
 });
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+
+// ── 认证 ────────────────────────────────────────────────────────────────────
+// 对外暴露的用户字段白名单：数据库模型（含 password hash 等）禁止直接序列化。
+export const authUserSchema = z.object({
+  id: z.string().min(1),
+  email: z.string().email(),
+  name: z.string(),
+  emailVerified: z.boolean(),
+  image: z.string().url().nullable(),
+  createdAt: z.string().datetime(),
+});
+
+export type AuthUser = z.infer<typeof authUserSchema>;
+
+export const meResponseSchema = z.object({
+  user: authUserSchema,
+});
+
+export type MeResponse = z.infer<typeof meResponseSchema>;
