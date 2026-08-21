@@ -78,6 +78,21 @@
   },
   "overrides": [
     {
+      "includes": ["apps/web/src/components/ui/**"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noLabelWithoutControl": "off",
+            "useSemanticElements": "off"
+          },
+          "suspicious": {
+            "noDoubleEquals": "off",
+            "noArrayIndexKey": "off"
+          }
+        }
+      }
+    },
+    {
       "includes": ["apps/api/**", "apps/worker/**"],
       "linter": {
         "rules": {

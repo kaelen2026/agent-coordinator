@@ -1,16 +1,18 @@
-import type { HealthResponse } from "@agent-coordinator/contracts";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
-
-const placeholder: HealthResponse = { status: "ok" };
 
 export default function HomePage() {
   return (
-    <main className="mx-auto flex min-h-svh max-w-2xl flex-col items-start justify-center gap-4 p-8">
-      <h1 className="font-heading text-2xl font-semibold tracking-tight">Agent Coordinator</h1>
-      <p className="text-muted-foreground text-sm">
-        web app scaffold — status: {placeholder.status}
-      </p>
-      <Button>Button</Button>
+    <main className="mx-auto flex min-h-svh max-w-2xl flex-col items-start justify-center gap-6 p-8">
+      <div className="flex flex-col gap-2">
+        <h1 className="font-heading text-2xl font-semibold tracking-tight">Agent Coordinator</h1>
+        <p className="text-muted-foreground text-sm">登录后查看你的账号信息。</p>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <Button render={<Link href="/sign-in">登录</Link>} />
+        <Button variant="outline" render={<Link href="/sign-up">注册</Link>} />
+        <Button variant="ghost" render={<Link href="/dashboard">我的账号</Link>} />
+      </div>
     </main>
   );
 }
