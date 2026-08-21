@@ -15,6 +15,8 @@ packages/typescript-config  共享 tsconfig（base / node / nextjs）
 
 常用命令（根目录）：`pnpm build` / `pnpm typecheck` / `pnpm test`（turbo 按依赖图执行并缓存，单包用 `--filter=@agent-coordinator/<name>`）；`pnpm check` / `pnpm check:fix`（biome 格式 + lint，仓库级）。提交经 husky 钩子跑 lint-staged 与 commitlint（Conventional Commits）。边界约束见 `.claude/rules/architecture.md`「Monorepo 边界」，操作 SOP 见 `monorepo` skill。
 
+本地基建：`pnpm infra:up` 起 **PostgreSQL 17 + Redis 7**（compose.yaml，带健康检查，`--wait` 等就绪）；`pnpm infra:down` 停；`pnpm infra:reset` 清空数据重建。连接串复制 `.env.example` 为 `.env`（不入库）。集成测试用真库跑（testing 规则），依赖它先起。
+
 ## 配置三层职责（新增内容放对位置）
 
 | 层 | 回答的问题 | 内容边界 |
