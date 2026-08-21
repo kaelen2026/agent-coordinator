@@ -17,3 +17,72 @@ export const healthResponseSchema = z.object({
 });
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+
+// ── 认证 ────────────────────────────────────────────────────────────────────
+// 对外暴露的用户字段白名单：数据库模型（含 password hash 等）禁止直接序列化。
+export const authUserSchema = z.object({
+  id: z.string().min(1),
+  email: z.string().email(),
+  name: z.string(),
+  emailVerified: z.boolean(),
+  image: z.string().url().nullable(),
+  createdAt: z.string().datetime(),
+});
+
+export type AuthUser = z.infer<typeof authUserSchema>;
+
+export const meResponseSchema = z.object({
+  user: authUserSchema,
+});
+
+export type MeResponse = z.infer<typeof meResponseSchema>;
+
+// better-auth 自带路由（`/api/auth/*`）的错误响应形状。它由库定义，与本仓库自有端点的
+// `apiErrorSchema` 不是一回事——调 `/api/auth/*` 用这个解析，调 `/api/me` 之类自有端点
+// 用 `apiErrorSchema`。
+//
+// `code` 是**可选**的：绝大多数分支有 code，但 better-auth 的限流响应只有 message。
+// 客户端不能假设 code 一定存在。
+//
+// 实测到的全部分支（apps/api 集成测试逐个打过；两种 429 的重试头名字不一样，别漏）：
+//
+// | 场景                     | status | code                                    | 头                  |
+// |--------------------------|--------|-----------------------------------------|---------------------|
+// | 字段缺失 / 邮箱格式错    | 400    | VALIDATION_ERROR                        | —                   |
+// | 密码过短（< 12）         | 400    | PASSWORD_TOO_SHORT                      | —                   |
+// | 密码过长（> 128）        | 400    | PASSWORD_TOO_LONG                       | —                   |
+// | 请求体不是 JSON          | 400    | BAD_REQUEST                             | —                   |
+// | 密码错 / 账号不存在      | 401    | INVALID_EMAIL_OR_PASSWORD               | —（两者响应完全相同）|
+// | 不可信 Origin            | 403    | INVALID_ORIGIN                          | —                   |
+// | **缺失 Origin 头**       | 403    | MISSING_OR_NULL_ORIGIN                  | —                   |
+// | 重复邮箱                 | 422    | USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL   | —                   |
+// | better-auth 限流         | 429    | （无 code）                              | `X-Retry-After: 10` |
+//
+// ⚠️ **凡是带凭证的服务端转发，必须显式设 `Origin`**。浏览器 fetch 会自动带，但
+// Next.js 的 Server Action / Route Handler / 服务端 `fetch` **默认不带**，从服务端转发
+// 登出或任何 `/api/auth/*` 写操作会直接吃 403 `MISSING_OR_NULL_ORIGIN`（实测过）。
+// 设的值必须在 api 的 `AUTH_TRUSTED_ORIGINS` 白名单里，否则变成 403 `INVALID_ORIGIN`。
+//
+// ⚠️ **`/api/auth/*` 的 429 响应头写的是 `content-type: text/plain;charset=UTF-8`，
+// 但 body 其实是 JSON**（其余分支都是 `application/json`）。`fetch().json()` 不受影响，
+// 但 axios 这类按 content-type 决定解析方式的客户端会拿到字符串，需要自己再 parse。
+//
+// 自有端点（`apiErrorSchema`）对照：
+// | 未登录                   | 401    | UNAUTHENTICATED                         | —                   |
+// | 限流                     | 429    | RATE_LIMITED                            | `Retry-After: 60`   |
+// | 请求体过大               | 413    | PAYLOAD_TOO_LARGE                       | —                   |
+// | 路由不存在               | 404    | NOT_FOUND                               | —                   |
+//
+// 两个 Retry-After 头都在 CORS 的 `Access-Control-Expose-Headers` 里，浏览器读得到。
+//
+// ⚠️ 表里的 `10` / `60` 是**当前配置下的观测值，不是常量**——better-auth 对
+// sign-in / sign-up 用 10 秒窗口、其他路径 60 秒，自有端点取环境变量
+// `API_RATE_LIMIT_WINDOW_SECONDS`。客户端**必须读响应头拿等待时长，不要把数字写死**：
+// 自有端点读 `Retry-After`，`/api/auth/*` 读 `X-Retry-After`（注意两者名字不同），
+// 都以秒为单位；读不到就退避到自己的默认值，不要假设。
+export const betterAuthErrorSchema = z.object({
+  message: z.string(),
+  code: z.string().optional(),
+});
+
+export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;

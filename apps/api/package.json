@@ -7,17 +7,26 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "start": "node --env-file-if-exists=../../.env dist/index.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
     "@agent-coordinator/contracts": "workspace:*",
+    "@better-auth/core": "1.7.1",
     "@hono/node-server": "^1.13.0",
+    "better-auth": "^1.7.1",
+    "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
+    "pg": "^8.23.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@agent-coordinator/typescript-config": "workspace:*",
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
