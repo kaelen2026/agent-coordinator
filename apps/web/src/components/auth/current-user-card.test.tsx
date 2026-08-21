@@ -31,6 +31,8 @@ describe("CurrentUserCard 的四态", () => {
 
     expect(await screen.findByText("阿玖")).toBeInTheDocument();
     expect(screen.getByText("a@example.com")).toBeInTheDocument();
+    // 邮箱验证状态用 StatusBadge 呈现，语义不变：仍以「已验证/未验证」文字为准
+    expect(screen.getByText("未验证")).toBeInTheDocument();
   });
 
   it("未登录：给出去登录的引导，而不是空白或裸露的数据结构", async () => {
