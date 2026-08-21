@@ -75,14 +75,22 @@ try {
   await shot(page, "01-guard-redirect");
 
   // ── 2. 注册 → 自动登录 → 落到受保护页 ──────────────────────────────────
-  await page.goto(`${WEB}/sign-up`);
+  // 关键：**从被弹到的这个登录页出发**，点链接去注册，全程不 goto。
+  // 用 goto 重新整页加载会把客户端的会话缓存清空，正好绕开"守卫已经判过一次未登录"
+  // 这个状态——真实用户不会那么走，这条路径上曾经藏过一个 BLOCKER。
+  await page.getByRole("link", { name: "注册一个" }).click();
+  await page.waitForURL(/\/sign-up/, { timeout: 15000 });
   await page.getByLabel("姓名").fill(NAME);
   await page.getByLabel("邮箱").fill(EMAIL);
   await page.getByLabel("密码").fill(PASSWORD);
   await page.getByRole("button", { name: "注册" }).click();
   await page.waitForURL(/\/dashboard/, { timeout: 20000 });
   await page.getByText(EMAIL).waitFor({ timeout: 20000 });
-  check("注册后自动登录并跳到 /dashboard，展示当前用户", true, `${page.url()} / ${EMAIL}`);
+  check(
+    "从被守卫弹出的登录页出发注册，自动登录并落到 /dashboard（不经整页刷新）",
+    page.url().includes("/dashboard") && (await page.getByText(EMAIL).isVisible()),
+    `${page.url()} / ${EMAIL}`,
+  );
   await shot(page, "02-signed-up-dashboard");
 
   // ── 3. 会话只走 HttpOnly cookie，明文 token 不落本地存储 ────────────────
@@ -111,7 +119,12 @@ try {
   // ── 5. 登出 ────────────────────────────────────────────────────────────
   await page.getByRole("button", { name: "登出" }).click();
   await page.waitForURL(/\/sign-in/, { timeout: 20000 });
-  check("登出后跳到登录页", true, page.url());
+  check(
+    "登出后跳到登录页并渲染出登录表单",
+    page.url().includes("/sign-in") &&
+      (await page.getByRole("button", { name: "登录" }).isVisible()),
+    page.url(),
+  );
   await shot(page, "04-signed-out");
 
   // ── 6. 登出后受保护页再次被拦 ──────────────────────────────────────────
@@ -198,15 +211,38 @@ try {
   const after = await businessAlert(page).textContent();
   check("限流倒计时逐秒递减", before !== after, `${before.trim()} -> ${after.trim()}`);
 
-  // ── 11. 再次登录成功，并按 redirectTo 回到原处 ──────────────────────────
+  // ── 11. 深链接登录：被守卫弹到登录页，就地登录，必须回到目标页 ────────────
+  // 这一步刻意**不** goto 登录页。直接构造 `/sign-in?redirectTo=...` 是整页加载，
+  // 客户端会话缓存是干净的；而真实用户是被守卫从 /dashboard 弹过来的，
+  // 那时缓存里已经存着一条"无会话"的结论。两者会走进完全不同的代码路径。
   await cooldown();
-  await page.goto(`${WEB}/sign-in?redirectTo=%2Fdashboard`);
+  await page.goto(`${WEB}/dashboard`);
+  await page.waitForURL(/\/sign-in\?redirectTo=%2Fdashboard/, { timeout: 20000 });
+
+  const navigations = [];
+  const recordNavigation = (frame) => {
+    if (frame === page.mainFrame()) navigations.push(frame.url());
+  };
+  page.on("framenavigated", recordNavigation);
+
   await page.getByLabel("邮箱").fill(EMAIL);
   await page.getByLabel("密码").fill(PASSWORD);
   await page.getByRole("button", { name: "登录" }).click();
-  await page.waitForURL(/\/dashboard/, { timeout: 20000 });
   await page.getByText(EMAIL).waitFor({ timeout: 20000 });
-  check("再次登录成功并按 redirectTo 回到 /dashboard", true, page.url());
+  page.off("framenavigated", recordNavigation);
+
+  check(
+    "被守卫弹到登录页后就地登录，回到 /dashboard 并渲染出当前用户",
+    page.url().includes("/dashboard") && (await page.getByText(EMAIL).isVisible()),
+    page.url(),
+  );
+  // 登录成功后又被弹回登录页是曾经的 BLOCKER：URL 会先变 /dashboard 再跳回 /sign-in，
+  // 只看最终状态可能因为重试而看不出来，所以把中途的导航序列也钉住。
+  check(
+    "登录成功后没有被弹回登录页（导航序列里不出现 sign-in 回跳）",
+    !navigations.some((url) => url.includes("/sign-in")),
+    `navigations=${JSON.stringify(navigations.map((u) => new URL(u).pathname + new URL(u).search))}`,
+  );
   await shot(page, "09-signed-in-again");
 } catch (error) {
   check("脚本执行", false, String(error));

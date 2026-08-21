@@ -9,7 +9,17 @@ import { vi } from "vitest";
  */
 
 export type StubRoute =
-  | { status: number; body: unknown; headers?: Record<string, string> }
+  | {
+      status: number;
+      body: unknown;
+      headers?: Record<string, string>;
+      /**
+       * 响应挂起直到这个 promise 兑现。用来精确复现"请求还在路上"的那段窗口——
+       * 会话相关的 bug 几乎都藏在这几十毫秒里，用真实延时会让测试变 flaky，
+       * 用一个自己控制的闸门才能稳定重现。
+       */
+      pendingUntil?: Promise<unknown>;
+    }
   | "network-error";
 
 export type StubbedFetch = {
@@ -32,6 +42,8 @@ export const stubFetch = (routes: Record<string, StubRoute>): StubbedFetch => {
       const route = match[1];
       if (route === "network-error") throw new TypeError("Failed to fetch");
 
+      if (route.pendingUntil !== undefined) await route.pendingUntil;
+
       return new Response(JSON.stringify(route.body), {
         status: route.status,
         headers: { "content-type": "application/json", ...(route.headers ?? {}) },
@@ -48,7 +60,20 @@ export const stubFetch = (routes: Record<string, StubRoute>): StubbedFetch => {
 /** better-auth 在登录/注册/登出之后会自动重新拉一次会话，测试里得把这条路由也备好。 */
 export const anonymousSession: StubRoute = { status: 200, body: null };
 
-export const authenticatedSession = (user: unknown): StubRoute => ({
+export const authenticatedSession = (
+  user: unknown,
+  pendingUntil?: Promise<unknown>,
+): StubRoute => ({
   status: 200,
   body: { user, session: { id: "s1", expiresAt: "2099-01-01T00:00:00.000Z" } },
+  pendingUntil,
 });
+
+/** 手动控制的闸门：用来把某个响应按住，直到测试自己放行。 */
+export const gate = () => {
+  let open = (): void => {};
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { opened, open: () => open() };
+};
