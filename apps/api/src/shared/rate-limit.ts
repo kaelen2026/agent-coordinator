@@ -33,20 +33,37 @@ export type RateLimiterOptions = {
   /**
    * 过期行保留多久。**与限流规则的窗口解耦**：如果拿"当前这条规则的窗口"当
    * cutoff，将来给某条路径挂一条更长窗口的规则时，短窗口那次请求的清理会把
-   * 长窗口尚未过期的桶一起删掉，等于静默放行。取一个远大于任何窗口的值。
+   * 长窗口尚未过期的桶一起删掉，等于静默放行。
+   *
+   * 必须 >= 用同一个 limiter 的所有规则里最长的那个窗口；用 `retentionSecondsFor`
+   * 算，别手填。
    */
   retentionSeconds?: number;
   /** 两次清理之间的最小间隔——清理不能跑在每个请求的关键路径上。 */
   pruneEveryMs?: number;
+  /** 清理实现。默认删库里的过期行；注入用于测试"清理失败不影响限流判定"。 */
+  prune?: (now: Date, retentionSeconds: number) => Promise<void>;
 };
 
-const DEFAULT_RETENTION_SECONDS = 24 * 60 * 60;
+/**
+ * 由最长窗口推出保留时长。一行超过自己的窗口之后对判定就再无信息量，留着只占地方，
+ * 所以取窗口的若干倍即可（留出余量吸收时钟偏差和清理间隔），不需要按天留。
+ */
+const RETENTION_WINDOW_MULTIPLE = 10;
+const MIN_RETENTION_SECONDS = 5 * 60;
+
+export const retentionSecondsFor = (longestWindowSeconds: number): number =>
+  Math.max(longestWindowSeconds * RETENTION_WINDOW_MULTIPLE, MIN_RETENTION_SECONDS);
+
+const DEFAULT_RETENTION_SECONDS = retentionSecondsFor(60);
 const DEFAULT_PRUNE_EVERY_MS = 60_000;
 
 export const createRateLimiter = (db: Db, options: RateLimiterOptions = {}): RateLimiter => {
   const now = options.now ?? (() => new Date());
   const retentionSeconds = options.retentionSeconds ?? DEFAULT_RETENTION_SECONDS;
   const pruneEveryMs = options.pruneEveryMs ?? DEFAULT_PRUNE_EVERY_MS;
+  const prune =
+    options.prune ?? ((at: Date, retention: number) => pruneExpiredRateLimits(db, at, retention));
   // 进程本地的节流游标。它只决定"这个进程什么时候顺手跑一次清理"，
   // 不参与限流判定，因此不算把状态放进了进程（判定状态仍然全在库里）。
   let nextPruneAt = 0;
@@ -75,9 +92,22 @@ export const createRateLimiter = (db: Db, options: RateLimiterOptions = {}): Rat
 
     // 按时间节流地清理。之前挂在 `count === 1` 上是错的：每个新键的首个请求都满足
     // 它，未匹配路径洪水下就变成"每个请求一次全表条件 DELETE"，是放大而不是缓解。
+    //
+    // 清理是运维动作，成败不能影响这次请求的限流判定：判定已经算完了，清理再失败
+    // 也只是过期行多留一会儿，下个间隔会重试。吞掉异常但记日志——这里的"处理"就是
+    // 降级继续，不是假装没发生。
     if (at.getTime() >= nextPruneAt) {
       nextPruneAt = at.getTime() + pruneEveryMs;
-      await pruneExpiredRateLimits(db, at, retentionSeconds);
+      try {
+        await prune(at, retentionSeconds);
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            msg: "rate limit cleanup failed, retrying next interval",
+            error: error instanceof Error ? error.message : "unknown",
+          }),
+        );
+      }
     }
 
     return {
@@ -115,6 +145,12 @@ const WILDCARD_ROUTE = "/*";
  * 用原始路径的话，键空间由攻击者控制：`/no-such-route-<i>` 每换一个后缀就是一个新桶，
  * 于是 404 洪水既限不住，还会在限流表里每个请求堆一行。用路由就把它们全部收敛到
  * 同一个桶（未匹配的收敛到 UNMATCHED_ROUTE，`/api/auth/` 下的未知子路径收敛到 `/api/auth/*`）。
+ *
+ * 注意 `c.req.routePath` 在中间件里恒为中间件自己的注册路径（`/*`），拿不到真正命中的
+ * 路由，所以只能走 `matchedRoutes`。它在 Hono 文档里主要作为调试手段介绍，**升级 Hono
+ * 时留意 app.test.ts 里 buckets_per_client_and_per_matched_route /
+ * collapses_every_unmatched_path_into_one_bucket_per_client /
+ * collapses_unknown_subpaths_of_a_wildcard_route_into_that_route_bucket 这三个用例**。
  */
 const routeKeyOf = (c: Context): string => {
   // matchedRoutes 里既有全局中间件（注册路径都是 /*）也有真正的路由；

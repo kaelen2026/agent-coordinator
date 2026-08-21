@@ -1,8 +1,8 @@
 import type { Pool } from "pg";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb, createPool, type Db } from "./db.js";
 import { loadConfig } from "./env.js";
-import { createRateLimiter, pruneExpiredRateLimits } from "./rate-limit.js";
+import { createRateLimiter, pruneExpiredRateLimits, retentionSecondsFor } from "./rate-limit.js";
 import { apiRateLimit } from "./rate-limit.schema.js";
 
 const config = loadConfig();
@@ -21,9 +21,9 @@ const advanceSeconds = (seconds: number): void => {
   clock = new Date(clock.getTime() + seconds * 1000);
 };
 
-// 清理默认按时间节流；这些用例要的是可预测的限流判定，所以把自动清理关掉
-// （pruneEveryMs 给一个跑不到的值），清理本身单独测。
-const limiter = createRateLimiter(db, { now, pruneEveryMs: Number.MAX_SAFE_INTEGER });
+// 这些用例要的是可预测的限流判定，所以把自动清理真正关掉——注入一个空实现。
+// （只把 pruneEveryMs 调大是关不掉的：节流游标初值为 0，首次调用照样会清理一次。）
+const limiter = createRateLimiter(db, { now, prune: async () => {} });
 
 beforeEach(async () => {
   clock = new Date("2026-03-01T00:00:00.000Z");
@@ -115,6 +115,60 @@ describe("pruneExpiredRateLimits", () => {
     await pruneExpiredRateLimits(db, now(), 24 * 60 * 60);
 
     expect(await db.select().from(apiRateLimit)).toHaveLength(1);
+  });
+});
+
+describe("retentionSecondsFor", () => {
+  it("scales_with_the_longest_window_instead_of_keeping_rows_for_a_day", () => {
+    // 一行超过自己的窗口后对判定就再无信息量，按天留纯属白占地方
+    expect(retentionSecondsFor(60)).toBeLessThan(60 * 60);
+    expect(retentionSecondsFor(60)).toBeGreaterThan(60);
+  });
+
+  it("never_drops_below_the_longest_window_that_uses_it", () => {
+    for (const window of [1, 60, 600, 3600]) {
+      expect(retentionSecondsFor(window)).toBeGreaterThanOrEqual(window);
+    }
+  });
+});
+
+describe("cleanup failures", () => {
+  const explode = async (): Promise<void> => {
+    throw new Error("delete timed out");
+  };
+
+  it("still_answers_the_request_when_cleanup_fails", async () => {
+    // 清理是运维动作，不能把一个已经判定放行的请求变成 500
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const limiterWithBrokenCleanup = createRateLimiter(db, {
+      now,
+      pruneEveryMs: 0,
+      prune: explode,
+    });
+
+    const decision = await limiterWithBrokenCleanup("cleanup-fails|/api/me", RULE);
+
+    expect(decision.allowed).toBe(true);
+    // 不是静默吞掉：降级继续 + 记日志
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  it("still_denies_over_budget_requests_when_cleanup_fails", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const limiterWithBrokenCleanup = createRateLimiter(db, {
+      now,
+      pruneEveryMs: 0,
+      prune: explode,
+    });
+
+    const decisions = [];
+    for (let i = 0; i < RULE.max + 1; i += 1) {
+      decisions.push(await limiterWithBrokenCleanup("cleanup-fails-2|/api/me", RULE));
+    }
+
+    expect(decisions.map((decision) => decision.allowed)).toEqual([true, true, true, false]);
+    logged.mockRestore();
   });
 });
 

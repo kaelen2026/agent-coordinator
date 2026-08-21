@@ -64,6 +64,12 @@ export type MeResponse = z.infer<typeof meResponseSchema>;
 // | 路由不存在               | 404    | NOT_FOUND                               | —                   |
 //
 // 两个 Retry-After 头都在 CORS 的 `Access-Control-Expose-Headers` 里，浏览器读得到。
+//
+// ⚠️ 表里的 `10` / `60` 是**当前配置下的观测值，不是常量**——better-auth 对
+// sign-in / sign-up 用 10 秒窗口、其他路径 60 秒，自有端点取环境变量
+// `API_RATE_LIMIT_WINDOW_SECONDS`。客户端**必须读响应头拿等待时长，不要把数字写死**：
+// 自有端点读 `Retry-After`，`/api/auth/*` 读 `X-Retry-After`（注意两者名字不同），
+// 都以秒为单位；读不到就退避到自己的默认值，不要假设。
 export const betterAuthErrorSchema = z.object({
   message: z.string(),
   code: z.string().optional(),
