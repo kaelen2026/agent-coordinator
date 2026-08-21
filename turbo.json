@@ -1,9 +1,14 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  // apps/web 的构建把 NEXT_PUBLIC_* 内联进客户端 bundle，值来自仓库根 .env
+  // （见 apps/web/next.config.ts）。不声明的话改了 .env 也会命中旧缓存，
+  // 拿到一个指向旧 api 地址的构建产物。
+  "globalDependencies": [".env"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"],
+      "env": ["NEXT_PUBLIC_API_BASE_URL"]
     },
     "typecheck": {
       "dependsOn": ["^build"]
