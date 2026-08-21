@@ -1,7 +1,7 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { CLIENT_IP_HEADER } from "../../shared/client-ip.js";
 import type { Db } from "../../shared/db.js";
-import type { AppConfig } from "../../shared/env.js";
 import * as schema from "./schema.js";
 import type { SessionUser } from "./service.js";
 
@@ -19,8 +19,16 @@ export type AuthGateway = {
   };
 };
 
+/** 本模块自己需要的配置形状，不直接吃全局 AppConfig，免得模块跟着全局配置漂移。 */
+export type AuthConfig = {
+  secret: string;
+  baseUrl: string;
+  trustedOrigins: string[];
+  crossSiteCookies: boolean;
+};
+
 /** 在进程入口构造一次；密码哈希、会话、限流全部交给 better-auth，不自行实现。 */
-export const createAuth = (db: Db, config: AppConfig["auth"]) =>
+export const createAuth = (db: Db, config: AuthConfig) =>
   betterAuth({
     database: drizzleAdapter(db, { provider: "pg", schema }),
     secret: config.secret,
@@ -38,8 +46,13 @@ export const createAuth = (db: Db, config: AppConfig["auth"]) =>
     // 限流计数落库：进程无状态，多实例共享同一份计数
     rateLimit: { enabled: true, storage: "database" },
     advanced: {
-      // 只有配置了可信代理才从 X-Forwarded-For 取客户端 IP，否则头可被伪造
-      ipAddress: { trustedProxies: config.trustedProxies },
+      // 必须显式写死 false：不写的话 better-auth 在 NODE_ENV=test 下会**整体关掉**
+      // origin/CSRF 校验（create-context.mjs 的 skipOriginCheck），
+      // 于是测试跑的是与生产不同的分支，trustedOrigins 配错也照样绿。
+      disableOriginCheck: false,
+      // 只认信任边界写入的内部头。clientIpMiddleware 会覆盖客户端自带的同名头，
+      // 所以这里拿到的 IP 与本服务限流用的完全一致，也不会被伪造。
+      ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
       defaultCookieAttributes: config.crossSiteCookies
         ? { sameSite: "none", secure: true, partitioned: true }
         : { sameSite: "lax" },

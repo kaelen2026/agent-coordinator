@@ -15,8 +15,9 @@ if (!url) {
 
 export default defineConfig({
   dialect: "postgresql",
-  // 每个模块自带 schema.ts（单体模块化：表归属跟着模块走）
-  schema: "./src/modules/*/schema.ts",
+  // 每个模块自带 schema.ts（单体模块化：表归属跟着模块走）；
+  // shared 下是不属于任何领域的基础设施表（限流计数）
+  schema: ["./src/modules/*/schema.ts", "./src/shared/*.schema.ts"],
   out: "./drizzle",
   dbCredentials: { url },
   strict: true,

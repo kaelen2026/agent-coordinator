@@ -36,3 +36,16 @@ export const meResponseSchema = z.object({
 });
 
 export type MeResponse = z.infer<typeof meResponseSchema>;
+
+// better-auth 自带路由（`/api/auth/*`）的错误响应形状。它由库定义，与本仓库自有端点的
+// `apiErrorSchema` 不是一回事——客户端调 `/api/auth/*` 用这个解析，调 `/api/me` 之类
+// 本仓库自有端点用 `apiErrorSchema`。
+//
+// `code` 是可选的：登录失败是 `{message, code:"INVALID_EMAIL_OR_PASSWORD"}`，
+// 但限流的 429 只有 `{message}` 没有 code——客户端不能假设 code 一定存在。
+export const betterAuthErrorSchema = z.object({
+  message: z.string(),
+  code: z.string().optional(),
+});
+
+export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;

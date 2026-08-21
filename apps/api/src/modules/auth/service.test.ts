@@ -61,6 +61,13 @@ describe("getCurrentUser", () => {
     expect(user.createdAt).toBe("2026-01-02T03:04:05.000Z");
   });
 
+  it("fails_loudly_on_an_unparsable_created_at_rather_than_inventing_a_timestamp", async () => {
+    // image 可以降级为 null，时间戳不行——编一个出来只会让排障更难
+    await expect(
+      getCurrentUser(sessionOf(makeSessionUser({ createdAt: "garbage" })), headers),
+    ).rejects.toThrow(/createdAt/);
+  });
+
   it("degrades_unparsable_image_to_null_instead_of_breaking_the_contract", async () => {
     const user = await getCurrentUser(sessionOf(makeSessionUser({ image: "not-a-url" })), headers);
     expect(user.image).toBeNull();

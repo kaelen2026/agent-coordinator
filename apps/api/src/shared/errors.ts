@@ -11,6 +11,8 @@ export class AppError extends Error {
     readonly code: string,
     message: string,
     readonly details: unknown[] = [],
+    /** 附加响应头，如 429 的 Retry-After（api-design：限流必须告诉客户端等多久）。 */
+    readonly headers: Record<string, string> = {},
   ) {
     super(message);
   }
@@ -22,7 +24,7 @@ const body = (code: string, message: string, details: unknown[] = []): ApiError 
 
 export const onError = (err: Error, c: Context): Response => {
   if (err instanceof AppError) {
-    return c.json(body(err.code, err.message, err.details), err.status);
+    return c.json(body(err.code, err.message, err.details), err.status, err.headers);
   }
   if (err instanceof HTTPException) {
     return c.json(body("HTTP_ERROR", err.message), err.status);

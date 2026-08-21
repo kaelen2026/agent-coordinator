@@ -24,8 +24,16 @@ const toImage = (image: string | null | undefined): string | null => {
   return parsed.success ? parsed.data : null;
 };
 
-const toIsoString = (value: Date | string): string =>
-  value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+// 会话可能来自 cookie cache（JSON 序列化过，createdAt 是字符串）而不是数据库行，
+// 两种都要接住。解析不出来的值不能降级——时间戳没有安全的兜底值，
+// 编一个反而更难排查，所以带上下文快速失败，由 onError 统一转成 500。
+const toIsoString = (field: string, value: Date | string): string => {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`session user has an unparsable ${field}`);
+  }
+  return parsed.toISOString();
+};
 
 /**
  * 把会话用户映射为对外契约的白名单字段。
@@ -37,7 +45,7 @@ const toAuthUser = (user: SessionUser): AuthUser => ({
   name: user.name,
   emailVerified: user.emailVerified,
   image: toImage(user.image),
-  createdAt: toIsoString(user.createdAt),
+  createdAt: toIsoString("createdAt", user.createdAt),
 });
 
 /** 取当前登录用户；无有效会话是不可重试的业务失败，抛稳定 code 由 onError 映射。 */
