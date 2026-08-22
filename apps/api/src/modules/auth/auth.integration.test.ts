@@ -343,9 +343,11 @@ describe("bearer token auth for native clients", () => {
 
   it("currently_tolerates_a_percent_encoded_token_but_the_contract_still_says_pass_it_through", async () => {
     // 钉住的是**当前观测到的宽容行为，不是我们承诺的契约**——契约要求客户端原样透传 token。
-    // 之所以要钉：这是个"错了也不报错"的坑（bearer 被翻译成 cookie 后走 cookie 解析，
-    // 顺手把百分号编码解掉了），iOS 若误加 encodeURIComponent，开发期一切正常。客户端不可热修，
-    // 等 better-auth 收紧这个宽容度就是全量登出。有这条测试，收紧时 CI 先红。
+    // 之所以要钉：这是个"错了也不报错"的坑，iOS 若误加 encodeURIComponent，开发期一切正常。
+    // 解码来自 bearer plugin before hook 里孤零零一行
+    // `decodedToken = token.includes("%") ? tryDecode(token) : token`（plugins/bearer/index.mjs），
+    // 发生在**校验 HMAC 之前、写进请求 cookie 之前**——不是"翻译成 cookie 后被 cookie 解析顺手解掉"。
+    // 这个区别决定升级时该盯哪儿：那一行没了就是全量登出，而客户端不可热修。有这条测试，收紧时 CI 先红。
     const email = freshEmail();
     const token = tokenFrom(await signUp(email, PASSWORD, NATIVE));
     const encoded = encodeURIComponent(token);
@@ -358,6 +360,24 @@ describe("bearer token auth for native clients", () => {
 
     expect(res.status).toBe(200);
     expect(meResponseSchema.parse(await res.json()).user.email).toBe(email);
+  });
+
+  it("stops_tolerating_at_two_layers_a_double_encoded_token_is_rejected", async () => {
+    // 上一条的宽容度**恰好一层**，这条钉住另一侧的边界。它同时是那段机制解释的判据：
+    // 链路上只有 bearer plugin 那一次 decodeURIComponent，两层编码只被解回一层，剩下的
+    // 仍然不是合法签名 → 401。要是哪天双层也 200，说明链路上多了一次解码（比如解完真的又
+    // 走了一遍 cookie 解析），契约里"只解一层"那段话就得改。
+    const token = tokenFrom(await signUp(freshEmail(), PASSWORD, NATIVE));
+    const double = encodeURIComponent(encodeURIComponent(token));
+    // 先确认两层真比一层多编了东西（`%` 自己被编成 `%25`），否则下面的 401 可能只是
+    // "这个 token 本来就没什么可编的"，属于假红。
+    expect(double).not.toBe(encodeURIComponent(token));
+    expect(double).toContain("%25");
+
+    const res = await get("/api/me", { ...NATIVE, bearer: double });
+
+    expect(res.status).toBe(401);
+    expect(apiErrorSchema.parse(await res.json()).error.code).toBe("UNAUTHENTICATED");
   });
 
   it("sign_in_hands_the_native_client_a_session_token_in_a_response_header", async () => {
@@ -503,19 +523,61 @@ describe("origin requirements for native clients", () => {
   // 原生 URLSession 默认一个 Origin 头都不发。better-auth 的 origin/CSRF 校验只在请求
   // **带 Cookie 头**时才强制（origin-check.mjs 的 `useCookies`），或者在请求已经带了
   // Origin/Referer/Sec-Fetch-* 时强制（sign-in/sign-up 的 formCsrfMiddleware）。
-  // 这是 iOS 契约的地基：契约里那张 3×3 的 Origin 矩阵，本块逐格钉住（"不发 Origin" 与
-  // "不可信 Origin" 两行，共 6 格；"api 自己的源"那一行由上面 bearer 各测试用 NATIVE 覆盖）——
+  // 这是 iOS 契约的地基：契约里那张 3×3 的 Origin 矩阵，本块钉住其中 6 格（"不发 Origin"
+  // 与"不可信 Origin"两行；"api 自己的源"那一行由上面 bearer 各测试用 NATIVE 覆盖）——
   // 升级 better-auth 时任何一格变了必须让 CI 先红，而不是等 iOS 上线挂掉。
+  // 这 6 格由**七条**测试覆盖：第一行第一格是 sign-up、sign-in 各一条（那一格本来就是两个
+  // 端点），其余 5 格各一条。
   //
-  // 本块另有三条**不属于那 9 格**的测试，钉的是矩阵头两行各自的前提（即"客户端一个
-  // `Sec-Fetch-*` 都不发"），契约第 5 节那两条警告靠它们成立：
+  // 本块另有**六条不属于那 9 格**的测试。其中四条钉的是矩阵头两行各自的前提（即"客户端不发
+  // Origin 时，`Sec-Fetch-*` 和 `Referer` 也一个都不发"），契约第 4、5 节那几条警告靠它们成立：
   //   - `rejects_sign_in_that_sends_sec_fetch_headers_but_no_origin`
-  //     ——补了 `Sec-Fetch-*` 却不发 Origin，第一行的 200 就变 403；
+  //     ——补了 `Sec-Fetch-*` 却不发 Origin，第一行的 200 就变 403 MISSING_OR_NULL_ORIGIN；
+  //   - `rejects_sign_in_that_sends_only_a_referer_and_no_origin`
+  //     ——`Referer` 是同一个触发条件的另一半，且它被当成 origin 去比清单（403 INVALID_ORIGIN）；
   //   - `node_fetch_without_an_origin_is_rejected_because_its_own_stack_adds_sec_fetch_mode`
   //     ——上面那个头调用方的 HTTP 栈会**自己**补上，不需要谁手写；
   //   - `blocks_cross_site_navigation_sign_in_even_when_the_origin_is_trusted`
   //     ——跨站导航形态在校验 Origin 之前就被拦，第二行的"发可信 Origin 就 200"也有前提。
+  // 另外两条钉的是"谁够得着这些坑"和 cookie 路径：
+  //   - `node_fetch_cannot_construct_the_blocked_cross_site_navigation_combination`
+  //     ——上一格那个被拦的组合 Node 侧根本构造不出来，契约据此说集成脚本不沾它；
+  //   - `still_requires_a_trusted_origin_once_the_request_carries_a_cookie`
+  //     ——矩阵讲的是"不带 cookie 的原生客户端"，web 走的 a 分支一点没松，由它守住。
+  // 七 + 四 + 二 = 本块 13 条，跟实际跑出来的条数对得上；再加测试请同步这段账。
   const noOrigin: RequestOptions = { origin: null };
+
+  /**
+   * 起一条**真 HTTP** 通道跑请求。`app.request()` 直接喂 Request 对象，绕过了 undici 的请求
+   * 构造，观测不到"调用方的 HTTP 栈自己补了什么头"——而契约恰恰有几句是在讲这个。
+   * 回调拿到 base URL 和 `seen`：`seen[i]` 是服务端**实际收到**的第 i 个请求的头。
+   */
+  const overRealHttp = async <T>(
+    run: (base: string, seen: Headers[]) => Promise<T>,
+  ): Promise<T> => {
+    const seen: Headers[] = [];
+    const { server, port } = await new Promise<{ server: ServerType; port: number }>((resolve) => {
+      const started: ServerType = serve(
+        {
+          fetch: (req: Request) => {
+            seen.push(req.headers);
+            return app.fetch(req);
+          },
+          hostname: "127.0.0.1",
+          port: 0,
+        },
+        (info) => resolve({ server: started, port: info.port }),
+      );
+    });
+
+    try {
+      return await run(`http://127.0.0.1:${port}`, seen);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  };
 
   it("accepts_sign_up_from_a_client_that_sends_no_origin_and_no_cookie", async () => {
     const res = await signUp(freshEmail(), PASSWORD, noOrigin);
@@ -558,6 +620,28 @@ describe("origin requirements for native clients", () => {
     expect((await signIn(email, PASSWORD, noOrigin)).status).toBe(200);
   });
 
+  it("rejects_sign_in_that_sends_only_a_referer_and_no_origin", async () => {
+    // 矩阵第一行的另一半前提：`Referer` 和 `Sec-Fetch-*` 一样是"这是浏览器发的"信号
+    // （origin-check.mjs 的 `headers.get("origin") || headers.get("referer")` 分支）。
+    // 而且它更阴一点——validateOrigin 里同样是 `origin || referer`，于是 Referer 的值被**当成
+    // origin** 去比信任清单，不在清单里就是 INVALID_ORIGIN，而不是缺 Origin 的 MISSING_OR_NULL。
+    // 契约第 4 节把 Referer 写进前提，靠的就是这条。
+    const email = freshEmail();
+    await signUp(email, PASSWORD, noOrigin);
+
+    const res = await app.request(url("/api/auth/sign-in/email"), {
+      method: "POST",
+      // 刻意只有 Referer：没有 Origin / Cookie / Sec-Fetch-*
+      headers: { "Content-Type": "application/json", Referer: "http://evil.example.com/login" },
+      body: JSON.stringify({ email, password: PASSWORD }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(betterAuthErrorSchema.parse(await res.json()).code).toBe("INVALID_ORIGIN");
+    // 对照：同一个请求去掉 Referer 就是 200。少了这一句，上面的 403 也可能是别的原因。
+    expect((await signIn(email, PASSWORD, noOrigin)).status).toBe(200);
+  });
+
   it("node_fetch_without_an_origin_is_rejected_because_its_own_stack_adds_sec_fetch_mode", async () => {
     // 契约第 5 节写了"Node/undici 的内置 fetch 默认就补 `sec-fetch-mode: cors`"。那是**别人家的
     // 行为**，上面那条手工塞头的测试证明不了它——手工塞头只说明"塞了就 403"，不说明"你什么都不做
@@ -567,15 +651,8 @@ describe("origin requirements for native clients", () => {
     const email = freshEmail();
     await signUp(email, PASSWORD, noOrigin);
 
-    const { server, port } = await new Promise<{ server: ServerType; port: number }>((resolve) => {
-      const started: ServerType = serve(
-        { fetch: app.fetch, hostname: "127.0.0.1", port: 0 },
-        (info) => resolve({ server: started, port: info.port }),
-      );
-    });
-
-    try {
-      const endpoint = `http://127.0.0.1:${port}/api/auth/sign-in/email`;
+    await overRealHttp(async (base, seen) => {
+      const endpoint = `${base}/api/auth/sign-in/email`;
       const body = JSON.stringify({ email, password: PASSWORD });
       // 只设 Content-Type：Origin / Referer / Sec-Fetch-* 一个都没写
       const headers = { "Content-Type": "application/json" };
@@ -584,6 +661,16 @@ describe("origin requirements for native clients", () => {
 
       expect(res.status).toBe(403);
       expect(betterAuthErrorSchema.parse(await res.json()).code).toBe("MISSING_OR_NULL_ORIGIN");
+
+      // 契约点名的是 `sec-fetch-mode: cors`，所以直接断言服务端**收到的就是这个头**。
+      // 只断 403 是不够的：origin-check.mjs 的触发条件是 site || mode || dest 任一在场，
+      // undici 哪天改成补 `sec-fetch-dest`，403 照旧、测试照绿，契约那句却变成错的。
+      const [received] = seen;
+      expect(received?.get("sec-fetch-mode")).toBe("cors");
+      // 同时确认这 403 真是"自己被补了头"而不是我们哪里漏发/多发了什么
+      expect(received?.get("origin")).toBeNull();
+      expect(received?.get("referer")).toBeNull();
+      expect(received?.get("cookie")).toBeNull();
 
       // 对照：同一条真 HTTP 请求补上可信 Origin 就是 200。少了它，上面的 403 也可能是
       // "真 HTTP 这条路本身就不通"（端口、body、路由写错），而不是缺 Origin。
@@ -595,11 +682,43 @@ describe("origin requirements for native clients", () => {
 
       expect(withOrigin.status).toBe(200);
       expect(tokenFrom(withOrigin)).not.toBe("");
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it("node_fetch_cannot_construct_the_blocked_cross_site_navigation_combination", async () => {
+    // 契约说"跨站导航那一格 Node/undici 构造不出来，所以集成脚本不沾"。这同样是 **undici 的**
+    // 行为，得自己钉住，理由有两条、都在这里断言：
+    //   a. `mode: "navigate"` 被 Request 构造器直接拒绝（fetch 也走同一个构造器）；
+    //   b. 手工塞的 `Sec-Fetch-Mode` 会被 undici 覆写成请求真实的 mode（这里是默认的 cors）。
+    // 注意 b 只对 Mode 成立：`Sec-Fetch-Site` undici 不管，塞什么发什么——所以"手工塞头会被
+    // 覆盖"这句话不能笼统地说成整组 Sec-Fetch-*。undici 放开任一条，这条先红。
+    expect(() => new Request("http://127.0.0.1/x", { mode: "navigate" })).toThrow(/navigate/i);
+
+    const email = freshEmail();
+    await signUp(email, PASSWORD, noOrigin);
+
+    await overRealHttp(async (base, seen) => {
+      const res = await fetch(`${base}/api/auth/sign-in/email`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // 可信 Origin + 手工拼出上一条被拦的那个组合
+          Origin: apiOrigin,
+          "Sec-Fetch-Site": "cross-site",
+          "Sec-Fetch-Mode": "navigate",
+        },
+        body: JSON.stringify({ email, password: PASSWORD }),
       });
-    }
+
+      const [received] = seen;
+      // Site 原样发出去了……
+      expect(received?.get("sec-fetch-site")).toBe("cross-site");
+      // ……但塞进去的 navigate 到了服务端变成 cors，组合就此凑不齐
+      expect(received?.get("sec-fetch-mode")).toBe("cors");
+      // 于是走的是普通 origin 校验分支：Origin 可信 → 200，而不是 CROSS_SITE_NAVIGATION 的 403
+      expect(res.status).toBe(200);
+      expect(tokenFrom(res)).not.toBe("");
+    });
   });
 
   it("blocks_cross_site_navigation_sign_in_even_when_the_origin_is_trusted", async () => {

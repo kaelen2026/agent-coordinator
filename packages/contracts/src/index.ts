@@ -119,13 +119,19 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // 服务端开了 `requireSignature`，只接受带签名的完整 token——把签名去掉、只留裸的会话 id
 // 会被当成无效凭证（401）。这是有意的：裸 id 一旦从库/备份/日志漏出来就能冒充用户。
 //
-// ⚠️ 「不要 URL 编解码」这条读起来像"编码了就会失败"，实际不是：**服务端当前会容忍百分号编码**
-// （bearer 被翻译成会话 cookie 后走 cookie 解析，顺手解掉一层），`encodeURIComponent(token)`
-// 发过去照样 200。但这是**当前观测到的宽容度，不是契约承诺**——客户端不要依赖它，必须原样透传。
+// ⚠️ 「不要 URL 编解码」这条读起来像"编码了就会失败"，实际不是：**服务端当前会容忍恰好一层
+// 百分号编码**——bearer plugin 的 before hook 在**校验 HMAC 之前**对含 `%` 的 token 显式
+// `decodeURIComponent` 一次（`plugins/bearer/index.mjs` 里的
+// `decodedToken = token.includes("%") ? tryDecode(token) : token`），所以
+// `encodeURIComponent(token)` 发过去照样 200；**编两层就是 401**（只解一层，解回来的东西
+// 仍然不是合法签名）。注意这解码不是"翻译成会话 cookie 后走 cookie 解析顺手解的"——cookie
+// 那一层只还原它自己编上去的，升级时要盯的是插件里那一行，不是通用的 cookie 解析代码。
+// 但这是**当前观测到的宽容度，不是契约承诺**——客户端不要依赖它，必须原样透传。
 // 依赖它的代价：客户端不可热修，而这是个"错了也不报错"的坑（开发期一切正常），
-// better-auth 哪天不再解码就是全量登出。宽容度本身由
+// better-auth 哪天删掉那一行就是全量登出。宽容度的两侧都钉住了当前行为：
 // `currently_tolerates_a_percent_encoded_token_but_the_contract_still_says_pass_it_through`
-// 钉住当前行为，它变了 CI 会先红——那条测试记录的是"今天的观测"，不是我们对客户端的承诺。
+// （一层 → 200）与 `stops_tolerating_at_two_layers_a_double_encoded_token_is_rejected`
+// （两层 → 401），它变了 CI 会先红——那两条测试记录的是"今天的观测"，不是我们对客户端的承诺。
 //
 // **3. 怎么带、哪些端点接受**
 //
@@ -142,7 +148,8 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 //   a. 请求带了 `Cookie` 头 —— 这是 web 的情形，规则一点没变；
 //   b. 请求带了 `Origin`（或 `Referer` / `Sec-Fetch-*`）—— 此时 `sign-up` / `sign-in`
 //      会**强制**校验它在信任清单里。
-// 原生客户端两条都不沾（`URLSession` 默认不发 `Origin`，也不带 cookie），所以：
+// 原生客户端两条都不沾（`URLSession` 默认不发 `Origin`，也不带 cookie——见下面那条 ⚠️ 的
+// 标注），所以：
 //
 // | iOS 发的 Origin                      | sign-up / sign-in    | sign-out（bearer） | `GET /api/me` |
 // |--------------------------------------|----------------------|--------------------|---------------|
@@ -150,12 +157,23 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // | api 自己的源（=`BETTER_AUTH_URL`）   | 200                  | 200                | 200           |
 // | 自己编的（`http://evil.example.com`）| 403 `INVALID_ORIGIN` | 200                | 200           |
 //
-// ⚠️ 第一行（"不发 Origin"）成立的前提是**一个 `Sec-Fetch-*` 都不发**——这正是上面 b 分支的
-// 触发条件之一。只发 `Sec-Fetch-*` 不发 `Origin` 会吃 403 `MISSING_OR_NULL_ORIGIN`。
+// ⚠️ 第一行（"不发 Origin"）成立的前提是**一个 `Sec-Fetch-*` 都不发、`Referer` 也不发**——
+// 这正是上面 b 分支的触发条件。两种漏法的报错还不一样：只发 `Sec-Fetch-*` 不发 `Origin` 吃
+// 403 `MISSING_OR_NULL_ORIGIN`；只发 `Referer` 不发 `Origin` 则 `Referer` 的值被**当成
+// origin** 去比信任清单（源码里两处都是 `origin || referer`），不在清单里就是 403
+// `INVALID_ORIGIN`。
 // 第二行（"发 api 自己的源"）也有前提：不能是 `Sec-Fetch-Site: cross-site` 配
 // `Sec-Fetch-Mode: navigate` 的跨站导航形态——那种请求在校验 Origin **之前**就被拦掉，
-// Origin 再可信也是 403。两条前提对 `URLSession` 都自动满足（它一个 `Sec-Fetch-*` 都不发）。
+// Origin 再可信也是 403。
 // 两格都详见第 5 节错误分支表。
+//
+// ⚠️ **本节凡是讲 `URLSession` 发什么的句子（不发 `Origin`、不发 `Sec-Fetch-*`、不带 cookie），
+// 都是按 Apple 文档与 Fetch 规范推断的，本仓库没有实测**——`apps/ios/` 目前只有一个 README，
+// 产不出任何客户端侧观测（与下面 WKWebView 那条同等待遇）。服务端这一侧（"收到这些头会怎样"）
+// 是逐格实测的，没实测的是"iOS 究竟会发出什么"这一半：网络层封装、企业代理、系统升级都可能
+// 替你补上 `Sec-Fetch-*` 或 `Referer`，一补上就落进上面那条前提，sign-in 全量 403，而客户端
+// 不可热修。所以下面 ✅ 那条建议是**唯一不依赖这个推断的做法**：固定发 `Origin` 就直接落在
+// 矩阵第二行，与"客户端还偷偷补了什么头"无关。真要依赖第一行，先在设备上抓一次包确认。
 //
 // 9 格逐格由 `auth.integration.test.ts` 断言钉住（"不发"与"不可信"两行在
 // `origin requirements for native clients` 里，"api 自己的源"那一行由 bearer 各测试用 `NATIVE`
@@ -166,7 +184,8 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // 理由：better-auth 恒把 `baseURL` 的源放进 trustedOrigins（`getTrustedOrigins`——不用配、
 // 也不用往 `AUTH_TRUSTED_ORIGINS` 里加），所以这个值在"强制校验"和"不校验"两条分支下都通得
 // 过；而"什么都不发"只在"不校验"那条分支下成立，将来 better-auth 把校验改成无条件就会整体
-// 挂掉。两种都实测通过，但发 Origin 的那条更抗升级。
+// 挂掉，而且它还得赌"客户端确实一个头都没多发"（上面那条 ⚠️ 说的未验证部分）。
+// 两种在服务端侧都实测通过，但发 Origin 的那条更抗升级、也不依赖对 `URLSession` 的推断。
 //
 // ⚠️ **这条建议带一个部署耦合，必须显式满足**：矩阵第二行成立的前提是"客户端配的 api 基址的源"
 // 与"服务端 `BETTER_AUTH_URL` 的源"**逐字相同**（scheme、host、端口，别名/CDN 域名都算不同）。
@@ -196,21 +215,32 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // ⚠️ 表里**「发了 `Sec-Fetch-*` 但没发 Origin」那一行最容易被自己的 HTTP 层坑到**：
 // `Sec-Fetch-*` 也算"这是浏览器发的"信号（见第 4 节的 b 分支），一旦带上它，Origin 就从
 // "可以不发"变成"必须发且必须可信"。
-// **任何会自动补 `Sec-Fetch-*` 的 HTTP 层都必须同时发 `Origin`**：Node/undici 的内置 `fetch`
-// 默认就补 `sec-fetch-mode: cors`（实测；用它写的集成脚本什么都没做也会全量 403）。
+// **任何会自动补 `Sec-Fetch-*` 的 HTTP 层都必须同时发 `Origin`**（必要不充分——发了 Origin
+// 也未必够，见紧接着的下一段）：Node/undici 的内置 `fetch` 默认就补 `sec-fetch-mode: cors`
+// （实测，测试直接断言服务端收到的就是这个头名和值；用它写的集成脚本什么都没做也会全量 403）。
 // WKWebView 走浏览器栈、按 Fetch 规范同样会补——但**这条本仓库没实测**，真要用之前自己验一次。
-// `URLSession` 不发 `Sec-Fetch-*`，所以第 4 节矩阵第一行对 iOS 仍然成立；而按第 4 节 ✅ 那条建议
-// 固定发 `Origin: <BETTER_AUTH_URL 的源>`，本来就顺带把这一格规避掉了。
-// 由 `origin requirements for native clients` 的两条测试钉住：
-// `rejects_sign_in_that_sends_sec_fetch_headers_but_no_origin`（服务端这一侧的判定）与
+// `URLSession` 按 Apple 文档不发 `Sec-Fetch-*`（**同样没实测，见第 4 节那条 ⚠️**），所以第 4 节
+// 矩阵第一行对 iOS 才成立；而按第 4 节 ✅ 那条建议固定发 `Origin: <BETTER_AUTH_URL 的源>`，
+// 本来就顺带把这一格规避掉了，也不必赌这个推断。
+// 由 `origin requirements for native clients` 的三条测试钉住：
+// `rejects_sign_in_that_sends_sec_fetch_headers_but_no_origin`（服务端这一侧的判定）、
+// `rejects_sign_in_that_sends_only_a_referer_and_no_origin`（`Referer` 是同一个触发条件的另一半，
+// 且报的是 `INVALID_ORIGIN` 而不是 `MISSING_OR_NULL_ORIGIN`）与
 // `node_fetch_without_an_origin_is_rejected_because_its_own_stack_adds_sec_fetch_mode`
 // （调用方的 HTTP 栈会自己把这个头补上，不需要谁手写）。
 //
 // ⚠️ 但**"发了 Origin"不是万能解**——这就是上表最后一行：同一个 `formCsrfMiddleware` 里还有更严
 // 的一条分支，`Sec-Fetch-Site: cross-site` 配 `Sec-Fetch-Mode: navigate`（跨站导航/表单登录的
-// 形态）在校验 Origin **之前**就被拦掉，**Origin 可信也照样 403**（实测）。`URLSession` 与
-// Node/undici 都构造不出这个组合（undici 恒发 `sec-fetch-mode: cors`），所以 iOS 与集成脚本都
-// 不沾；WKWebView 里的跨站表单提交会。由
+// 形态）在校验 Origin **之前**就被拦掉，**Origin 可信也照样 403**（实测）。
+// Node/undici 构造不出这个组合，所以集成脚本不沾：`mode: "navigate"` 被 `Request` 构造器直接
+// 拒绝（`invalid request mode navigate`），手工塞的 `Sec-Fetch-Mode` 又会被 undici 覆写成请求
+// 真实的 mode——注意是"**默认**发 `cors`"而不是"恒发 cors"，`fetch(url, { mode: "no-cors" })`
+// 就会发 `sec-fetch-mode: no-cors`，只是 `navigate` 这个值取不到（Node 22.22.1 / 24.16.0 实测，
+// 由 `node_fetch_cannot_construct_the_blocked_cross_site_navigation_combination` 钉住；
+// `Sec-Fetch-Site` undici 不覆写，塞什么发什么，所以"被覆写"只对 Mode 成立）。
+// `URLSession` 不沾这一格的理由不同：它不会**自动**补这两个头，但 `URLRequest.setValue` 想设
+// 就能设——所以这是"别去手工设"的纪律，不是平台拦着你（客户端侧同样未实测，见第 4 节 ⚠️）。
+// WKWebView 里的跨站表单提交会踩到。服务端这一侧由
 // `blocks_cross_site_navigation_sign_in_even_when_the_origin_is_trusted` 钉住。
 //
 // ⚠️ 上表第一行和第二行的响应**逐字节相同**：服务端不告诉你 token 是"签名错"还是"会话没了"
