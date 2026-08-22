@@ -1,6 +1,6 @@
 # agent-coordinator
 
-技术栈：**Turborepo + pnpm workspace** monorepo；API 为 **Hono.js + 单体模块化**（modular monolith，模块边界见 architecture 规则）；数据库访问 **Drizzle ORM + drizzle-kit 迁移**（PostgreSQL 17）；worker 为 TypeScript 后台服务（Redis 队列）；Web 端 **Next.js 16.2 + TypeScript + Tailwind v4 + shadcn/ui**（Next 锁 `~16.2.x`，升大版本需走 coordinator 决策）；iOS 端 **SwiftUI**。
+技术栈：**Turborepo + pnpm workspace** monorepo；API 为 **Hono.js + 单体模块化**（modular monolith，模块边界见 architecture 规则）；数据库访问 **Drizzle ORM + drizzle-kit 迁移**（PostgreSQL 17）；worker 为 TypeScript 后台服务（Redis 队列）；Web 端 **Next.js 16.2 + TypeScript + Tailwind v4 + shadcn/ui**（Next 锁 `~16.2.x`，升大版本需走 coordinator 决策）；iOS 端 **SwiftUI**。Web 端视觉约束唯一来源是 `apps/web/DESIGN.md`（终端操作台方向：token、字体、状态色、圆角、动效均以它为准），任何 UI 新增或调整先读它，偏离需在 PR 里说明理由。
 
 ## 仓库布局
 
