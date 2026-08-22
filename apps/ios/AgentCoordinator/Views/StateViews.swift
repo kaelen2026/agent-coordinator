@@ -36,8 +36,8 @@ struct OfflineStateView: View {
 /// 可重试的错误态。限流时用倒计时展示还要等多久（窗口截止时刻由 `SessionController` 持有）。
 struct FailureStateView: View {
     let failure: AuthFailure
-    /// 限流失败才有值。
-    let rateLimitDeadline: Date?
+    /// 限流失败才有值。单调时钟上的时刻，见 `MonotonicClock`。
+    let rateLimitDeadline: ContinuousClock.Instant?
     let onRetry: () async -> Void
 
     var body: some View {
@@ -72,11 +72,14 @@ struct ConfigurationErrorView: View {
 /// 限流倒计时。
 ///
 /// 参数是窗口的**截止时刻**而不是剩余秒数：`.task` 在离屏 / 切后台时会被取消，回来是重启
-/// 不是续跑，拿秒数当起点就会从头再数一遍。每跳一次都拿墙钟对着截止时刻重算，
+/// 不是续跑，拿秒数当起点就会从头再数一遍。每跳一次都对着截止时刻重算，
 /// 于是重启也只是接着数剩下的。截止时刻由状态的归属者持有（`AuthFormModel` /
 /// `SessionController`），视图自己不发明时间。
+///
+/// 时刻读在单调时钟上（`MonotonicClock`）：用户改设备时间不会让倒计时跳。
+/// 剩余量走 `RateLimitWindow` 这一个入口算，与"挡不挡提交"用的是同一条规则。
 struct RateLimitNoticeView: View {
-    let deadline: Date
+    let deadline: ContinuousClock.Instant
     var onExpire: (() -> Void)?
 
     @State private var remaining = 0
@@ -100,9 +103,8 @@ struct RateLimitNoticeView: View {
             }
     }
 
-    private static func secondsRemaining(until deadline: Date) -> Int {
-        let remaining = deadline.timeIntervalSince(Date())
-        return remaining > 0 ? Int(remaining.rounded(.up)) : 0
+    private static func secondsRemaining(until deadline: ContinuousClock.Instant) -> Int {
+        RateLimitWindow.secondsRemaining(until: deadline, now: ContinuousClock.now) ?? 0
     }
 }
 
@@ -154,7 +156,7 @@ struct AsyncButton: View {
     #Preview("错误：限流倒计时") {
         FailureStateView(
             failure: .rateLimited(retryAfterSeconds: 45),
-            rateLimitDeadline: Date().addingTimeInterval(45)
+            rateLimitDeadline: ContinuousClock.now.advanced(by: .seconds(45))
         ) {}
     }
 

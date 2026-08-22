@@ -249,6 +249,64 @@ struct SessionControllerRaceTests {
         #expect(controller.state == .loaded(TestFixtures.otherUser))
     }
 
+    @Test("登出正在清 Keychain 的那一格里，迟到的 /api/me 200 不许把用户写回已登录")
+    func staleCurrentUserCannotResurrectSessionBeingDiscarded() async throws {
+        // 与 staleUnauthorizedDoesNotClearTokenBeingSaved **对称**。代数不变式有两个入口
+        // ——凭证的两种变化：`adoptSession` 换新、`discardStoredToken` 清掉——两边都必须在
+        // `await` 触碰 Keychain **之前**抬高代数。save 那侧已经被上面那条钉住了；这条钉
+        // clear 这一侧：把 `sessionGeneration += 1` 挪到 `await tokenStore.clear()` 之后，
+        // 就会漏出这一格——Keychain 已经空了、代数还没抬高，在飞的 /api/me 200 于是能通过
+        // 代数比对，把一条已经被登出作废的会话写回已登录态。
+        //
+        // 与 staleEmptyTokenLoadDoesNotOverrideNewerSignIn 同一标准：目前没有 UI 可达的
+        // 触发路径（signOut 只从 SignedInView 发起，那一屏没有能重入的第二个入口），
+        // 所以不是线上 bug，是纵深防御。写它是为了把 discardStoredToken 注释里那句
+        // "改一边就要改另一边，别把它们拆开"变成机器可执行的约束，而不是靠人读注释。
+        let client = FakeAuthClient()
+        client.signOutOutcomes = [.signedOut]
+        // 在飞的这次 /api/me 拉回的是这条会话的最新资料（比如服务端改了昵称）。
+        // 它本身是一个合法的 200，正因如此才危险：一个字都不许落到屏幕上。
+        client.currentUserResults = [.success(TestFixtures.otherUser)]
+        let store = try FakeSessionTokenStore(stored: TestFixtures.token())
+        let controller = makeController(client: client, store: store, initialState: .loaded(TestFixtures.user))
+
+        let meGate = AsyncGate()
+        client.gate = meGate
+        let clearGate = AsyncGate()
+        await store.setClearGate(clearGate)
+
+        // 1. 下拉刷新：/api/me 发出去了，还挂着
+        let refreshTask = Task { await controller.refresh() }
+        while client.currentUserCallCount == 0 {
+            await Task.yield()
+        }
+
+        // 2. 用户点登出：服务端已经确认登出，Keychain 也已经被清空，
+        //    但 clear 还没从 await 里返回 —— 就停在这一格里
+        let signOutTask = Task { await controller.signOut() }
+        while await store.clearCount == 0 {
+            await Task.yield()
+        }
+        #expect(await store.currentToken() == nil)
+
+        // 3. 就在这一格里，那个 /api/me 200 回来了
+        await meGate.open()
+        await refreshTask.value
+
+        // 凭证已经没了，界面绝不能因此翻新成"另一份资料的已登录态"。
+        // 代数没抬高的话，这里会是 .loaded(otherUser)。
+        #expect(controller.state == .loaded(TestFixtures.user))
+
+        // 4. 登出恢复，走完自己那一段
+        await clearGate.open()
+        await signOutTask.value
+
+        #expect(controller.state == .unauthenticated)
+        #expect(await store.currentToken() == nil)
+        // 迟到的结果被判作废，不该再触发一次清理（401 分支同理）。
+        #expect(await store.clearCount == 1)
+    }
+
     @Test("迟到的 401 属于旧会话，不许清掉新会话的凭证")
     func staleUnauthorizedDoesNotClearNewerSession() async throws {
         let oldToken = try TestFixtures.token()

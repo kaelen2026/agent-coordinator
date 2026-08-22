@@ -293,9 +293,36 @@ struct AuthFormModelTests {
         #expect(form.submission == .idle)
         #expect(form.rateLimitRetryAfterSeconds == nil)
         #expect(form.isSubmitBlocked == false)
+        // 提示区由 `rateLimitedUntil` 驱动（`AuthFormScreen`：`if let deadline = form.rateLimitedUntil`），
+        // 它不跟着一起清掉，界面就永远卡在"请在 0 秒后重试"，还把后续真正的失败提示
+        // 挡在 else 分支后面。窗口与提示必须是同一份真相。
+        #expect(form.rateLimitedUntil == nil)
 
         await form.submit()
         #expect(authenticator.signInCalls.count == 2)
+    }
+
+    @Test("限流窗口过去之后，新的失败提示能正常显示（不被残留的倒计时挡住）")
+    func laterFailureIsShownAfterRateLimitWindow() async {
+        let clock = MutableClock()
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [
+            .failed(.remote(.rateLimited(retryAfterSeconds: 10))),
+            .failed(.remote(.invalidCredentials)),
+        ]
+        let form = signInForm(authenticator, clock: clock)
+        form.email = "a@b.co"
+        form.password = "wrong-password-x"
+        await form.submit()
+        #expect(form.rateLimitedUntil != nil)
+
+        clock.advance(by: 10)
+        await form.submit()
+
+        // 第二次失败不是限流：倒计时必须已经让位给失败文案
+        #expect(form.rateLimitedUntil == nil)
+        #expect(form.failureMessage == AuthCopy.message(for: .invalidCredentials))
+        #expect(form.isSubmitBlocked == false)
     }
 
     @Test("切后台再回来不会重新计时：窗口按截止时刻算，不随倒计时视图的生死重启")
@@ -349,6 +376,60 @@ struct AuthFormModelTests {
 
         await form.submit()
         #expect(authenticator.signInCalls.count == 1)
+    }
+
+    @Test("不足一秒的零头向上取整：倒计时不会提前归零")
+    func rateLimitRemainderRoundsUp() async {
+        let clock = MutableClock()
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [.failed(.remote(.rateLimited(retryAfterSeconds: 10)))]
+        let form = signInForm(authenticator, clock: clock)
+        form.email = "a@b.co"
+        form.password = "pw"
+        await form.submit()
+
+        // 还剩 6.5 秒：显示 7 而不是 6 —— 显示 6 会让倒计时比窗口先归零，
+        // 用户按提示重试仍会吃 429。
+        clock.advance(by: 3.5)
+        #expect(form.rateLimitRetryAfterSeconds == 7)
+        #expect(form.isSubmitBlocked)
+
+        // 只差 1 毫秒也还在窗口里
+        clock.advance(by: 6.499)
+        #expect(form.rateLimitRetryAfterSeconds == 1)
+        #expect(form.isSubmitBlocked)
+    }
+
+    @Test("设备时钟被回拨也不会把用户锁在超出服务端上限的窗口里")
+    func rateLimitWindowNeverOutlivesTheServerCap() async {
+        // `AuthFailureClassifier` 把 Retry-After 钳到 maxRetryAfterSeconds，理由是"服务端给出
+        // 荒谬值时不要把用户锁进一个几小时的倒计时"。那次钳位发生在**写入时**，只作用于
+        // 服务端给的秒数；窗口自己是靠"现在几点"判活的，时钟一动，那条保护就绕过去了。
+        // 上限必须是**始终成立的不变式**：不管时钟怎么动，剩余量都不许超过上限，
+        // 更不许把用户锁进一个只能杀进程才出得来的窗口。
+        let clock = MutableClock()
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [
+            .failed(.remote(.rateLimited(retryAfterSeconds: 60))),
+            .authenticated,
+        ]
+        let form = signInForm(authenticator, clock: clock)
+        form.email = "a@b.co"
+        form.password = "pw"
+        await form.submit()
+        #expect(form.rateLimitRetryAfterSeconds == 60)
+
+        // 用户在「设置」里把时间往回调一天（NTP 步进校正、夏令时回拨同理）
+        clock.advance(by: -86400)
+
+        #expect((form.rateLimitRetryAfterSeconds ?? 0) <= AuthFailureClassifier.maxRetryAfterSeconds)
+        // 窗口的剩余量超出上限说明这个窗口不可信，不能拿它继续封锁用户：
+        // 服务端那边还有自己的限流兜着，这里放行最坏也只是多吃一次 429。
+        #expect(form.isSubmitBlocked == false)
+        #expect(form.rateLimitRetryAfterSeconds == nil)
+
+        await form.submit()
+        #expect(authenticator.signInCalls.count == 2)
     }
 
     @Test("非限流的失败照旧随输入改动收掉，也不挡提交")

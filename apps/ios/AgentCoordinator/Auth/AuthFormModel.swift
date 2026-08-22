@@ -23,24 +23,27 @@ final class AuthFormModel {
     private(set) var fieldErrors: [AuthFormField: String] = [:]
     private(set) var submission: Submission = .idle
 
-    /// 限流窗口的**截止时刻**。
+    /// 限流窗口的**截止时刻**，读在**单调时钟**上（`MonotonicClock`）。
     ///
     /// 刻意存截止时间而不是剩余秒数：秒数只有配合"从什么时候开始数"才有意义，而倒计时是挂在
     /// 视图生命周期上的（`.task` 在离屏 / 切后台时被取消，回来是**重启**不是续跑）。用倒计时
     /// 当窗口的唯一出口，切个后台回来就要从头再数一遍，封锁时长会超过服务端给的窗口——
     /// 那是在惩罚用户。截止时刻与视图在不在场无关。
     ///
+    /// 之所以是单调时钟而不是墙钟：见 `MonotonicClock` 的说明——墙钟能被用户改，
+    /// 往回一拨就把 60 秒的窗口变成一天。
+    ///
     /// 恒等式：它只在 `submission` 是限流失败时非 nil，靠 `setSubmission` 一处维护，
     /// 避免"提示是这个错、窗口是那个错"的两份真相。
-    private(set) var rateLimitedUntil: Date?
+    private(set) var rateLimitedUntil: ContinuousClock.Instant?
 
     private let authenticator: any AuthenticationPerforming
-    private let now: DateProvider
+    private let now: MonotonicClock
 
     init(
         mode: Mode,
         authenticator: any AuthenticationPerforming,
-        now: @escaping DateProvider = systemDateProvider
+        now: @escaping MonotonicClock = systemMonotonicClock
     ) {
         self.mode = mode
         self.authenticator = authenticator
@@ -59,10 +62,13 @@ final class AuthFormModel {
         isSubmitting || isRateLimited
     }
 
-    /// 限流窗口是否还没过去。判据是墙钟时间与截止时刻，与倒计时视图在不在场无关。
+    /// 限流窗口是否还没过去。与倒计时视图在不在场无关。
+    ///
+    /// 刻意由 `rateLimitRetryAfterSeconds` 派生而不是自己比一次截止时刻：两个读点必须
+    /// 说同一件事——"界面显示还要等 N 秒"和"提交被挡着"不能各判各的
+    /// （`RateLimitWindow` 的上限不变式于是对两者同时成立）。
     var isRateLimited: Bool {
-        guard let rateLimitedUntil else { return false }
-        return now() < rateLimitedUntil
+        rateLimitRetryAfterSeconds != nil
     }
 
     var failureMessage: String? {
@@ -77,9 +83,7 @@ final class AuthFormModel {
     /// 秒数而不是重新开始的整段窗口；窗口已经过去就是 nil。
     var rateLimitRetryAfterSeconds: Int? {
         guard let rateLimitedUntil else { return nil }
-        let remaining = rateLimitedUntil.timeIntervalSince(now())
-        guard remaining > 0 else { return nil }
-        return Int(remaining.rounded(.up))
+        return RateLimitWindow.secondsRemaining(until: rateLimitedUntil, now: now())
     }
 
     func submit() async {
@@ -134,7 +138,7 @@ final class AuthFormModel {
     private func setSubmission(_ next: Submission) {
         submission = next
         if case let .failed(.remote(.rateLimited(seconds))) = next {
-            rateLimitedUntil = now().addingTimeInterval(TimeInterval(seconds))
+            rateLimitedUntil = now().advanced(by: .seconds(seconds))
         } else {
             rateLimitedUntil = nil
         }

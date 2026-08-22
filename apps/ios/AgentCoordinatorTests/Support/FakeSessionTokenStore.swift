@@ -18,6 +18,7 @@ actor FakeSessionTokenStore: SessionTokenStore {
     private var saveGate: AsyncGate?
     private var gatedSaveCall: Int?
     private var loadGate: AsyncGate?
+    private var clearGate: AsyncGate?
 
     init(stored: SessionToken? = nil) {
         self.stored = stored
@@ -39,6 +40,13 @@ actor FakeSessionTokenStore: SessionTokenStore {
     /// 恢复时外面可能已经换了一条会话。
     func setLoadGate(_ gate: AsyncGate) {
         loadGate = gate
+    }
+
+    /// clear 在**清空之后**挂住：制造"Keychain 已经空了、登出还没从 await 里恢复"那一格
+    /// 窗口。它是 `setSaveGate` 的镜像——代数不变式的两个入口（换新 / 清掉）各要一个闸门
+    /// 才测得到。
+    func setClearGate(_ gate: AsyncGate) {
+        clearGate = gate
     }
 
     func currentToken() -> SessionToken? {
@@ -74,5 +82,8 @@ actor FakeSessionTokenStore: SessionTokenStore {
             throw Boom()
         }
         stored = nil
+        if let clearGate {
+            await clearGate.wait()
+        }
     }
 }

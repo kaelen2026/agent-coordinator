@@ -51,17 +51,18 @@ final class SessionController {
 
     private let client: any AuthClient
     private let tokenStore: any SessionTokenStore
-    private let now: DateProvider
+    private let now: MonotonicClock
     private var isRefreshing = false
 
-    /// 限流窗口的截止时刻，两条失败通道各一个。
+    /// 限流窗口的截止时刻，两条失败通道各一个，读在**单调时钟**上。
     ///
     /// 与 `AuthFormModel.rateLimitedUntil` 同一条原则：存截止时刻而不是秒数——倒计时挂在
     /// 视图生命周期上，离屏 / 切后台被取消再回来是**重启**不是续跑，用秒数当起点就会从头再数。
+    /// 用单调时钟而不是墙钟的理由见 `MonotonicClock`（墙钟能被用户拨回去）。
     /// 这两个值只经下面的计算属性读出去，读时会连着核对对应通道当前确实是限流失败，
     /// 所以不需要在每个赋值点补一次清理（新的限流失败一定连着新的截止时刻一起写）。
-    private var stateRateLimitedUntil: Date?
-    private var signOutRateLimitedUntil: Date?
+    private var stateRateLimitedUntil: ContinuousClock.Instant?
+    private var signOutRateLimitedUntil: ContinuousClock.Instant?
 
     /// 会话代数。本地凭证每变一次（存进新 token、清掉 token）就 +1。
     ///
@@ -76,7 +77,7 @@ final class SessionController {
         client: any AuthClient,
         tokenStore: any SessionTokenStore,
         initialState: State = .loading,
-        now: @escaping DateProvider = systemDateProvider
+        now: @escaping MonotonicClock = systemMonotonicClock
     ) {
         self.client = client
         self.tokenStore = tokenStore
@@ -85,13 +86,13 @@ final class SessionController {
     }
 
     /// 界面态那条限流失败的窗口截止时刻。
-    var stateRateLimitDeadline: Date? {
+    var stateRateLimitDeadline: ContinuousClock.Instant? {
         guard case .failed(.rateLimited) = state else { return nil }
         return stateRateLimitedUntil
     }
 
     /// 登出失败提示里那条限流的窗口截止时刻。
-    var signOutRateLimitDeadline: Date? {
+    var signOutRateLimitDeadline: ContinuousClock.Instant? {
         guard case .rateLimited = signOutFailure else { return nil }
         return signOutRateLimitedUntil
     }
@@ -124,6 +125,26 @@ final class SessionController {
         await applyCurrentUser(token: token, generation: generation)
     }
 
+    /// 登出。
+    ///
+    /// **这是代数不变式的一个例外，在此显式声明。** `discardStoredToken` 的注释把
+    /// "每个在 `await` 之后写 `state` 的路径都要先比一次代数"抬成了不变式，而下面两个出口
+    /// （本地没有凭证、服务端确认登出）都是在 `await` 之后直接写 `state`，一次比对都没做。
+    /// 这是有意的，不是漏了：
+    ///
+    /// - **signOut 自己就是最新的那次凭证变更**——代数正是它在 `discardStoredToken()` 里
+    ///   抬起来的。拿进入时记下的代数去比，必然永远不相等，等于把这两行判成"永远不执行"，
+    ///   登出就再也回不到登录页了。照抄 `refresh()` 的写法在这里是错的。
+    ///   写成"在 `discardStoredToken()` 之后重新取一次代数再比"倒是成立，但那时比的是
+    ///   "我抬完之后有没有人又抬了一次"，构造不出可达路径，只会让这段更绕
+    ///   （`architecture.md`：简单优先）。
+    ///
+    /// - **例外成立的前提**：signOut 在飞的这段时间里，界面上够不着任何会再次变更凭证的入口。
+    ///   当前确实如此——signOut 只从 `SignedInView` 发起，那一屏没有登录表单；`isSigningOut`
+    ///   挡住它自己重入；`refresh()` 被 `guard !isSigningOut` 直接拦掉。
+    ///   **这个前提一旦不成立**（日后 signOut 期间也能唤出登录表单、或加了自动重新登录 /
+    ///   换账号），这两行就会真的把一条更新的会话覆盖成未登录——那时必须改成
+    ///   "`discardStoredToken()` 之后重取代数再比"，不能再靠这条例外。
     func signOut() async {
         guard !isSigningOut else { return }
         isSigningOut = true
@@ -151,9 +172,9 @@ final class SessionController {
     }
 
     /// 限流失败 → 窗口截止时刻；其他失败没有窗口。
-    private func rateLimitDeadline(for failure: AuthFailure) -> Date? {
+    private func rateLimitDeadline(for failure: AuthFailure) -> ContinuousClock.Instant? {
         guard case let .rateLimited(seconds) = failure else { return nil }
-        return now().addingTimeInterval(TimeInterval(seconds))
+        return now().advanced(by: .seconds(seconds))
     }
 
     // MARK: - 内部

@@ -100,7 +100,7 @@ struct SessionControllerTests {
 
         await controller.refresh()
 
-        #expect(controller.stateRateLimitDeadline == clock.now().addingTimeInterval(45))
+        #expect(controller.stateRateLimitDeadline == clock.now().advanced(by: .seconds(45)))
         // 登出那条通道没发生过限流，不该借用这个窗口
         #expect(controller.signOutRateLimitDeadline == nil)
     }

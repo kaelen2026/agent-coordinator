@@ -222,7 +222,7 @@ struct SessionControllerAuthFlowTests {
         await controller.signOut()
 
         #expect(controller.signOutFailure == .rateLimited(retryAfterSeconds: 10))
-        #expect(controller.signOutRateLimitDeadline == clock.now().addingTimeInterval(10))
+        #expect(controller.signOutRateLimitDeadline == clock.now().advanced(by: .seconds(10)))
         #expect(controller.stateRateLimitDeadline == nil)
     }
 
