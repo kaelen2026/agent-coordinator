@@ -62,6 +62,9 @@ export type MeResponse = z.infer<typeof meResponseSchema>;
 // Next.js 的 Server Action / Route Handler / 服务端 `fetch` **默认不带**，从服务端转发
 // 登出或任何 `/api/auth/*` 写操作会直接吃 403 `MISSING_OR_NULL_ORIGIN`（实测过）。
 // 设的值必须在 api 的 `AUTH_TRUSTED_ORIGINS` 白名单里，否则变成 403 `INVALID_ORIGIN`。
+// 反过来，表里「缺失 Origin 头」那一行**不是无条件的 403**：既不带 cookie、也不带
+// `Referer` / `Sec-Fetch-*` 的裸请求（iOS `URLSession` 的默认形态）反而是 200。
+// 完整触发条件见下面 bearer 章节第 4 节。
 //
 // ⚠️ **`/api/auth/*` 的 429 响应头写的是 `content-type: text/plain;charset=UTF-8`，
 // 但 body 其实是 JSON**（其余分支都是 `application/json`）。`fetch().json()` 不受影响，
@@ -148,8 +151,11 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // | 自己编的（`http://evil.example.com`）| 403 `INVALID_ORIGIN` | 200                | 200           |
 //
 // ⚠️ 第一行（"不发 Origin"）成立的前提是**一个 `Sec-Fetch-*` 都不发**——这正是上面 b 分支的
-// 触发条件之一。只发 `Sec-Fetch-*` 不发 `Origin` 会吃 403 `MISSING_OR_NULL_ORIGIN`，
-// 详见第 5 节错误分支表。
+// 触发条件之一。只发 `Sec-Fetch-*` 不发 `Origin` 会吃 403 `MISSING_OR_NULL_ORIGIN`。
+// 第二行（"发 api 自己的源"）也有前提：不能是 `Sec-Fetch-Site: cross-site` 配
+// `Sec-Fetch-Mode: navigate` 的跨站导航形态——那种请求在校验 Origin **之前**就被拦掉，
+// Origin 再可信也是 403。两条前提对 `URLSession` 都自动满足（它一个 `Sec-Fetch-*` 都不发）。
+// 两格都详见第 5 节错误分支表。
 //
 // 9 格逐格由 `auth.integration.test.ts` 断言钉住（"不发"与"不可信"两行在
 // `origin requirements for native clients` 里，"api 自己的源"那一行由 bearer 各测试用 `NATIVE`
@@ -178,22 +184,34 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 //
 // **5. bearer 相关的错误分支（实测）**
 //
-// | 场景                                                | status | body / code                              |
-// |-----------------------------------------------------|--------|------------------------------------------|
-// | `/api/me` token 无效/过期/伪造/格式错/裸 id         | 401    | `apiErrorSchema` `UNAUTHENTICATED`       |
-// | `/api/me` 完全不带凭证                              | 401    | `apiErrorSchema` `UNAUTHENTICATED`       |
-// | `sign-out` 带已失效的 token                         | 200    | 幂等成功，不下发新 token                 |
-// | `sign-up`/`sign-in` 发了不可信 Origin               | 403    | `betterAuthErrorSchema` `INVALID_ORIGIN` |
-// | `sign-up`/`sign-in` 发了 `Sec-Fetch-*` 但没发 Origin| 403    | `betterAuthErrorSchema` `MISSING_OR_NULL_ORIGIN` |
+// | 场景                                                 | status | body / code                                                   |
+// |------------------------------------------------------|--------|---------------------------------------------------------------|
+// | `/api/me` token 无效/过期/伪造/格式错/裸 id          | 401    | `apiErrorSchema` `UNAUTHENTICATED`                            |
+// | `/api/me` 完全不带凭证                               | 401    | `apiErrorSchema` `UNAUTHENTICATED`                            |
+// | `sign-out` 带已失效的 token                          | 200    | 幂等成功，不下发新 token                                      |
+// | `sign-up`/`sign-in` 发了不可信 Origin                | 403    | `betterAuthErrorSchema` `INVALID_ORIGIN`                      |
+// | `sign-up`/`sign-in` 发了 `Sec-Fetch-*` 但没发 Origin | 403    | `betterAuthErrorSchema` `MISSING_OR_NULL_ORIGIN`              |
+// | `sign-up`/`sign-in` 跨站导航登录（见下）             | 403    | `betterAuthErrorSchema` `CROSS_SITE_NAVIGATION_LOGIN_BLOCKED` |
 //
-// ⚠️ 上表最后一行是**最容易被自己的 HTTP 层坑到**的一格：`Sec-Fetch-*` 也算"这是浏览器发的"
-// 信号（见第 4 节的 b 分支），一旦带上它，Origin 就从"可以不发"变成"必须发且必须可信"。
+// ⚠️ 表里**「发了 `Sec-Fetch-*` 但没发 Origin」那一行最容易被自己的 HTTP 层坑到**：
+// `Sec-Fetch-*` 也算"这是浏览器发的"信号（见第 4 节的 b 分支），一旦带上它，Origin 就从
+// "可以不发"变成"必须发且必须可信"。
 // **任何会自动补 `Sec-Fetch-*` 的 HTTP 层都必须同时发 `Origin`**：Node/undici 的内置 `fetch`
-// 默认就补 `sec-fetch-mode: cors`（用它写的集成脚本会全量 403），WKWebView 同理。
+// 默认就补 `sec-fetch-mode: cors`（实测；用它写的集成脚本什么都没做也会全量 403）。
+// WKWebView 走浏览器栈、按 Fetch 规范同样会补——但**这条本仓库没实测**，真要用之前自己验一次。
 // `URLSession` 不发 `Sec-Fetch-*`，所以第 4 节矩阵第一行对 iOS 仍然成立；而按第 4 节 ✅ 那条建议
 // 固定发 `Origin: <BETTER_AUTH_URL 的源>`，本来就顺带把这一格规避掉了。
-// 由 `origin requirements for native clients` 的
-// `rejects_sign_in_that_sends_sec_fetch_headers_but_no_origin` 钉住。
+// 由 `origin requirements for native clients` 的两条测试钉住：
+// `rejects_sign_in_that_sends_sec_fetch_headers_but_no_origin`（服务端这一侧的判定）与
+// `node_fetch_without_an_origin_is_rejected_because_its_own_stack_adds_sec_fetch_mode`
+// （调用方的 HTTP 栈会自己把这个头补上，不需要谁手写）。
+//
+// ⚠️ 但**"发了 Origin"不是万能解**——这就是上表最后一行：同一个 `formCsrfMiddleware` 里还有更严
+// 的一条分支，`Sec-Fetch-Site: cross-site` 配 `Sec-Fetch-Mode: navigate`（跨站导航/表单登录的
+// 形态）在校验 Origin **之前**就被拦掉，**Origin 可信也照样 403**（实测）。`URLSession` 与
+// Node/undici 都构造不出这个组合（undici 恒发 `sec-fetch-mode: cors`），所以 iOS 与集成脚本都
+// 不沾；WKWebView 里的跨站表单提交会。由
+// `blocks_cross_site_navigation_sign_in_even_when_the_origin_is_trusted` 钉住。
 //
 // ⚠️ 上表第一行和第二行的响应**逐字节相同**：服务端不告诉你 token 是"签名错"还是"会话没了"
 // 还是"根本没发"（`security.md`）。客户端拿到 401 的唯一正确反应是：清掉 Keychain 里的

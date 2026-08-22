@@ -6,6 +6,7 @@ import {
   meResponseSchema,
   SESSION_TOKEN_HEADER,
 } from "@agent-coordinator/contracts";
+import { type ServerType, serve } from "@hono/node-server";
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -112,10 +113,17 @@ const tokenFrom = (res: Response): string => res.headers.get(SESSION_TOKEN_HEADE
 
 /**
  * `set-auth-token` 的形状：`<会话 id>.<HMAC 签名>`，签名是**标准** base64
- * （会出现 `+` `/` 和末尾的 `=` 填充）。契约里写死了它，因为客户端必须原样透传——
- * trim、按 `.` 截断都会让 token 失效。（URL 编码是唯一的例外：服务端当前会容忍，
- * 但那只是观测到的宽容度、不是承诺，见
- * `currently_tolerates_a_percent_encoded_token_but_the_contract_still_says_pass_it_through`。）
+ * （会出现 `+` `/` 和末尾的 `=` 填充）。契约里写死了它，因为客户端必须原样透传。
+ *
+ * 「加工过的 token 会怎样」只写实测到的这两条，其余不猜：
+ *   - 按 `.` 截断、只留裸的会话 id → 401，由
+ *     `rejects_a_bare_session_id_that_carries_no_signature` 钉住；
+ *   - 百分号编码 → 服务端当前会容忍（200），由
+ *     `currently_tolerates_a_percent_encoded_token_but_the_contract_still_says_pass_it_through`
+ *     钉住；那是观测到的宽容度、不是承诺，客户端仍必须原样透传。
+ *
+ * 契约还禁止 trim 等其它加工，但那是"不做没理由做的事"，本仓库没有实测其后果——
+ * 别把禁令读成"这么干一定会 401"。
  */
 const TOKEN_FORMAT = /^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9+/]{16,}={0,2}$/;
 
@@ -498,6 +506,15 @@ describe("origin requirements for native clients", () => {
   // 这是 iOS 契约的地基：契约里那张 3×3 的 Origin 矩阵，本块逐格钉住（"不发 Origin" 与
   // "不可信 Origin" 两行，共 6 格；"api 自己的源"那一行由上面 bearer 各测试用 NATIVE 覆盖）——
   // 升级 better-auth 时任何一格变了必须让 CI 先红，而不是等 iOS 上线挂掉。
+  //
+  // 本块另有三条**不属于那 9 格**的测试，钉的是矩阵头两行各自的前提（即"客户端一个
+  // `Sec-Fetch-*` 都不发"），契约第 5 节那两条警告靠它们成立：
+  //   - `rejects_sign_in_that_sends_sec_fetch_headers_but_no_origin`
+  //     ——补了 `Sec-Fetch-*` 却不发 Origin，第一行的 200 就变 403；
+  //   - `node_fetch_without_an_origin_is_rejected_because_its_own_stack_adds_sec_fetch_mode`
+  //     ——上面那个头调用方的 HTTP 栈会**自己**补上，不需要谁手写；
+  //   - `blocks_cross_site_navigation_sign_in_even_when_the_origin_is_trusted`
+  //     ——跨站导航形态在校验 Origin 之前就被拦，第二行的"发可信 Origin 就 200"也有前提。
   const noOrigin: RequestOptions = { origin: null };
 
   it("accepts_sign_up_from_a_client_that_sends_no_origin_and_no_cookie", async () => {
@@ -521,9 +538,10 @@ describe("origin requirements for native clients", () => {
     // 契约 Origin 矩阵第一行（"不发 Origin → 200"）只在**一个 `Sec-Fetch-*` 都不发**时成立：
     // better-auth 的 formCsrfMiddleware 把 `Sec-Fetch-*` 也当成"这是浏览器发的"信号，于是
     // 强制要求 Origin，缺了就 403 MISSING_OR_NULL_ORIGIN。
-    // 这一格必须有测试：Node/undici 的内置 fetch **默认就补 `sec-fetch-mode`**（WKWebView 同理），
-    // 拿它写的集成脚本会全量吃 403 却看不出原因。URLSession 不发 `Sec-Fetch-*`，所以矩阵第一行
-    // 对 iOS 仍然成立——但 better-auth 一旦把这个触发条件放宽到"任何请求"，这条会先红。
+    // 这一格必须有测试：Node/undici 的内置 fetch **默认就补 `sec-fetch-mode`**，拿它写的
+    // 集成脚本会全量吃 403 却看不出原因（那一侧由下面那条真 HTTP 的测试钉）。URLSession 不发
+    // `Sec-Fetch-*`，所以矩阵第一行对 iOS 仍然成立——但 better-auth 一旦把这个触发条件放宽到
+    // "任何请求"，这条会先红。
     const email = freshEmail();
     await signUp(email, PASSWORD, noOrigin);
 
@@ -538,6 +556,83 @@ describe("origin requirements for native clients", () => {
     expect(betterAuthErrorSchema.parse(await res.json()).code).toBe("MISSING_OR_NULL_ORIGIN");
     // 对照：同一个请求去掉 Sec-Fetch-Mode 就是 200。少了这一句，上面的 403 也可能是别的原因。
     expect((await signIn(email, PASSWORD, noOrigin)).status).toBe(200);
+  });
+
+  it("node_fetch_without_an_origin_is_rejected_because_its_own_stack_adds_sec_fetch_mode", async () => {
+    // 契约第 5 节写了"Node/undici 的内置 fetch 默认就补 `sec-fetch-mode: cors`"。那是**别人家的
+    // 行为**，上面那条手工塞头的测试证明不了它——手工塞头只说明"塞了就 403"，不说明"你什么都不做
+    // 也会被塞"。而契约靠后半句才成立（qa 的集成脚本就是这么全量 403 的）。
+    // 所以这里走真 HTTP + 全局 fetch：不写任何 Origin / Sec-Fetch-* 头，照样 403。
+    // undici 哪天不再补这个头、或 better-auth 不再把它当浏览器信号，这条先红，契约那句话就得改。
+    const email = freshEmail();
+    await signUp(email, PASSWORD, noOrigin);
+
+    const { server, port } = await new Promise<{ server: ServerType; port: number }>((resolve) => {
+      const started: ServerType = serve(
+        { fetch: app.fetch, hostname: "127.0.0.1", port: 0 },
+        (info) => resolve({ server: started, port: info.port }),
+      );
+    });
+
+    try {
+      const endpoint = `http://127.0.0.1:${port}/api/auth/sign-in/email`;
+      const body = JSON.stringify({ email, password: PASSWORD });
+      // 只设 Content-Type：Origin / Referer / Sec-Fetch-* 一个都没写
+      const headers = { "Content-Type": "application/json" };
+
+      const res = await fetch(endpoint, { method: "POST", headers, body });
+
+      expect(res.status).toBe(403);
+      expect(betterAuthErrorSchema.parse(await res.json()).code).toBe("MISSING_OR_NULL_ORIGIN");
+
+      // 对照：同一条真 HTTP 请求补上可信 Origin 就是 200。少了它，上面的 403 也可能是
+      // "真 HTTP 这条路本身就不通"（端口、body、路由写错），而不是缺 Origin。
+      const withOrigin = await fetch(endpoint, {
+        method: "POST",
+        headers: { ...headers, Origin: apiOrigin },
+        body,
+      });
+
+      expect(withOrigin.status).toBe(200);
+      expect(tokenFrom(withOrigin)).not.toBe("");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it("blocks_cross_site_navigation_sign_in_even_when_the_origin_is_trusted", async () => {
+    // formCsrfMiddleware 在校验 Origin **之前**还有一条更严的分支：`Sec-Fetch-Site: cross-site`
+    // 配 `Sec-Fetch-Mode: navigate`（跨站导航/表单登录的形态）直接 403
+    // CROSS_SITE_NAVIGATION_LOGIN_BLOCKED——**发了可信 Origin 也救不回来**。
+    // 必须钉住：契约第 5 节"补了 Sec-Fetch-* 就同时发 Origin"那条建议在这一格不成立，
+    // 客户端不可热修，读契约的人得知道"发 Origin"不是万能解。
+    const email = freshEmail();
+    await signUp(email, PASSWORD, NATIVE);
+
+    const crossSite = async (mode: string): Promise<Response> =>
+      app.request(url("/api/auth/sign-in/email"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // 可信 Origin（=api 自己的源），照样过不了下面那条分支
+          Origin: apiOrigin,
+          "Sec-Fetch-Site": "cross-site",
+          "Sec-Fetch-Mode": mode,
+        },
+        body: JSON.stringify({ email, password: PASSWORD }),
+      });
+
+    const blocked = await crossSite("navigate");
+
+    expect(blocked.status).toBe(403);
+    expect(betterAuthErrorSchema.parse(await blocked.json()).code).toBe(
+      "CROSS_SITE_NAVIGATION_LOGIN_BLOCKED",
+    );
+    // 对照：只把 mode 从 navigate 换成 cors，同一个请求就是 200。少了这一句，上面的 403
+    // 也可能是 Origin、账号或别的原因，而不是"跨站导航"这条分支。
+    expect((await crossSite("cors")).status).toBe(200);
   });
 
   it("accepts_sign_out_with_a_bearer_token_and_no_origin_header", async () => {
