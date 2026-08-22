@@ -115,12 +115,15 @@ const tokenFrom = (res: Response): string => res.headers.get(SESSION_TOKEN_HEADE
  * `set-auth-token` 的形状：`<会话 id>.<HMAC 签名>`，签名是**标准** base64
  * （会出现 `+` `/` 和末尾的 `=` 填充）。契约里写死了它，因为客户端必须原样透传。
  *
- * 「加工过的 token 会怎样」只写实测到的这两条，其余不猜：
+ * 「加工过的 token 会怎样」只写实测到的这三条，其余不猜：
  *   - 按 `.` 截断、只留裸的会话 id → 401，由
  *     `rejects_a_bare_session_id_that_carries_no_signature` 钉住；
- *   - 百分号编码 → 服务端当前会容忍（200），由
+ *   - 百分号编码**一层** → 服务端当前会容忍（200），由
  *     `currently_tolerates_a_percent_encoded_token_but_the_contract_still_says_pass_it_through`
- *     钉住；那是观测到的宽容度、不是承诺，客户端仍必须原样透传。
+ *     钉住；那是观测到的宽容度、不是承诺，客户端仍必须原样透传；
+ *   - 百分号编码**两层** → 401，由
+ *     `stops_tolerating_at_two_layers_a_double_encoded_token_is_rejected` 钉住；链路上只有
+ *     一次解码，宽容度到一层为止，多一层就落回无效凭证。
  *
  * 契约还禁止 trim 等其它加工，但那是"不做没理由做的事"，本仓库没有实测其后果——
  * 别把禁令读成"这么干一定会 401"。

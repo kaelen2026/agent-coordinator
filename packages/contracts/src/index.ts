@@ -63,8 +63,9 @@ export type MeResponse = z.infer<typeof meResponseSchema>;
 // 登出或任何 `/api/auth/*` 写操作会直接吃 403 `MISSING_OR_NULL_ORIGIN`（实测过）。
 // 设的值必须在 api 的 `AUTH_TRUSTED_ORIGINS` 白名单里，否则变成 403 `INVALID_ORIGIN`。
 // 反过来，表里「缺失 Origin 头」那一行**不是无条件的 403**：既不带 cookie、也不带
-// `Referer` / `Sec-Fetch-*` 的裸请求（iOS `URLSession` 的默认形态）反而是 200。
-// 完整触发条件见下面 bearer 章节第 4 节。
+// `Referer` / `Sec-Fetch-*` 的裸请求反而是 200（服务端实测）。iOS `URLSession` 默认是不是
+// 这个形态，本仓库**没有实测**——那半句是推断。完整触发条件与该推断的标注见下面 bearer
+// 章节第 4 节。
 //
 // ⚠️ **`/api/auth/*` 的 429 响应头写的是 `content-type: text/plain;charset=UTF-8`，
 // 但 body 其实是 JSON**（其余分支都是 `application/json`）。`fetch().json()` 不受影响，
@@ -232,16 +233,22 @@ export type BetterAuthError = z.infer<typeof betterAuthErrorSchema>;
 // ⚠️ 但**"发了 Origin"不是万能解**——这就是上表最后一行：同一个 `formCsrfMiddleware` 里还有更严
 // 的一条分支，`Sec-Fetch-Site: cross-site` 配 `Sec-Fetch-Mode: navigate`（跨站导航/表单登录的
 // 形态）在校验 Origin **之前**就被拦掉，**Origin 可信也照样 403**（实测）。
-// Node/undici 构造不出这个组合，所以集成脚本不沾：`mode: "navigate"` 被 `Request` 构造器直接
-// 拒绝（`invalid request mode navigate`），手工塞的 `Sec-Fetch-Mode` 又会被 undici 覆写成请求
-// 真实的 mode——注意是"**默认**发 `cors`"而不是"恒发 cors"，`fetch(url, { mode: "no-cors" })`
-// 就会发 `sec-fetch-mode: no-cors`，只是 `navigate` 这个值取不到（Node 22.22.1 / 24.16.0 实测，
+// Node 的**内置 `fetch`**（undici）构造不出这个组合，所以拿它写的集成脚本不沾：
+// `mode: "navigate"` 被 `Request` 构造器直接拒绝（`invalid request mode navigate`），手工塞的
+// `Sec-Fetch-Mode` 又会被 undici 覆写成请求真实的 mode——注意是"**默认**发 `cors`"而不是
+// "恒发 cors"，`fetch(url, { mode: "no-cors" })` 就会发 `sec-fetch-mode: no-cors`，只是
+// `navigate` 这个值取不到（Node 22.22.1 / 24.16.0 实测，
 // 由 `node_fetch_cannot_construct_the_blocked_cross_site_navigation_combination` 钉住；
 // `Sec-Fetch-Site` undici 不覆写，塞什么发什么，所以"被覆写"只对 Mode 成立）。
 // `URLSession` 不沾这一格的理由不同：它不会**自动**补这两个头，但 `URLRequest.setValue` 想设
 // 就能设——所以这是"别去手工设"的纪律，不是平台拦着你（客户端侧同样未实测，见第 4 节 ⚠️）。
 // WKWebView 里的跨站表单提交会踩到。服务端这一侧由
 // `blocks_cross_site_navigation_sign_in_even_when_the_origin_is_trusted` 钉住。
+//
+// ⚠️ 上面"构造不出"只是**内置 `fetch` 这一个栈**的限制，别读成"这个组合发不出来"：`node:http`、
+// curl 这类裸 HTTP 客户端没有 Fetch 规范的 mode 概念、也就没有那次覆写，把两个头逐字写进去就
+// 发出去了（浏览器的真实跨站导航更是天然如此）。所以服务端这条防线不能撤——它挡的正是这类不受
+// Fetch 规范约束的调用方；内置 `fetch` 构造不出，只说明"我们的集成脚本不会误踩"，不说明没人能踩。
 //
 // ⚠️ 上表第一行和第二行的响应**逐字节相同**：服务端不告诉你 token 是"签名错"还是"会话没了"
 // 还是"根本没发"（`security.md`）。客户端拿到 401 的唯一正确反应是：清掉 Keychain 里的
