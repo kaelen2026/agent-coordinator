@@ -30,6 +30,16 @@ enum TestFixtures {
         createdAt: "2026-08-21T10:11:12.000Z"
     )
 
+    /// 第二个账号，用来测"换账号后旧请求迟到"这类跨操作交错。
+    static let otherUser = AuthUser(
+        id: "usr_01J0A",
+        email: "second@example.com",
+        name: "Second",
+        emailVerified: true,
+        imageURL: nil,
+        createdAt: "2026-08-22T01:02:03.000Z"
+    )
+
     static let blankUser = AuthUser(
         id: "usr_01HZX",
         email: "  ",

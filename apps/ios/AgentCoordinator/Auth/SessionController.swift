@@ -33,6 +33,15 @@ final class SessionController {
         case empty(AuthUser)
         case failed(AuthFailure)
         case offline
+
+        /// 屏幕上是否已经有值得留住的内容。下拉刷新时不该把它换成全屏 spinner——
+        /// 那会连列表和滚动位置一起丢掉。
+        var hasRetainableContent: Bool {
+            switch self {
+            case .loaded, .empty: true
+            case .loading, .unauthenticated, .failed, .offline: false
+            }
+        }
     }
 
     private(set) var state: State
@@ -44,6 +53,15 @@ final class SessionController {
     private let tokenStore: any SessionTokenStore
     private var isRefreshing = false
 
+    /// 会话代数。本地凭证每变一次（存进新 token、清掉 token）就 +1。
+    ///
+    /// `isRefreshing` 和 `isSigningOut` 是两把互不相干的锁，只挡各自的重入，挡不住
+    /// **不同操作之间**的交错：登出请求先回来清了 Keychain，之后那个还在飞的 `/api/me`
+    /// 200 回来，就会把已登出的会话写回已登录态（凭证已删、界面却还在展示账号）。
+    /// 所以每个会在 await 之后写 `state` 的路径都要先记下出发时的代数，回来时比一比——
+    /// 不一致说明这条会话已经作废，结果直接丢弃。
+    private var sessionGeneration = 0
+
     init(client: any AuthClient, tokenStore: any SessionTokenStore, initialState: State = .loading) {
         self.client = client
         self.tokenStore = tokenStore
@@ -54,17 +72,28 @@ final class SessionController {
     /// 进行中重复触发直接忽略：下拉刷新和重试按钮都可能被连点，旧结果不该覆盖新结果。
     func refresh() async {
         guard !isRefreshing else { return }
+        // 登出还在飞的时候刷新没有意义：结果注定要被丢弃（见 sessionGeneration），
+        // 却要白吃一次限流额度。这一条不能替代代数比对——它挡不住"刷新先出发、
+        // 登出后出发"那个顺序。
+        guard !isSigningOut else { return }
+
         isRefreshing = true
         defer { isRefreshing = false }
 
-        state = .loading
+        let generation = sessionGeneration
+
+        // 已经有内容在屏幕上（下拉刷新）就不切全屏加载态；冷启动和错误/离线态重试才切。
+        if !state.hasRetainableContent {
+            state = .loading
+        }
 
         guard let token = await loadStoredToken() else {
+            guard generation == sessionGeneration else { return }
             state = .unauthenticated
             return
         }
 
-        await applyCurrentUser(token: token)
+        await applyCurrentUser(token: token, generation: generation)
     }
 
     func signOut() async {
@@ -103,7 +132,10 @@ final class SessionController {
         }
     }
 
+    /// 作废当前会话的本地凭证。无论 Keychain 删没删掉，代数都要 +1：
+    /// "这条会话不算数了"是意图，不取决于删除操作的成败。
     private func discardStoredToken() async {
+        sessionGeneration += 1
         do {
             try await tokenStore.clear()
         } catch {
@@ -112,8 +144,22 @@ final class SessionController {
         }
     }
 
-    private func applyCurrentUser(token: SessionToken) async {
-        switch await client.currentUser(token: token) {
+    /// 结果在飞行期间是否还属于当前这条会话。
+    private enum SessionApplication {
+        case applied
+        /// 期间发生了登出 / 换账号：这条结果属于一条已经作废的会话，全部丢弃。
+        case superseded
+    }
+
+    @discardableResult
+    private func applyCurrentUser(token: SessionToken, generation: Int) async -> SessionApplication {
+        let result = await client.currentUser(token: token)
+
+        // 回来的第一件事：确认这条会话还是当前那条。放在 switch 之前是刻意的——
+        // 迟到的 401 同样不许动新会话的凭证（它说的是旧 token 失效，不是新 token 失效）。
+        guard generation == sessionGeneration else { return .superseded }
+
+        switch result {
         case let .success(user):
             state = user.hasDisplayableProfile ? .loaded(user) : .empty(user)
         case let .failure(error):
@@ -130,6 +176,8 @@ final class SessionController {
                 state = .failed(error.displayFailure)
             }
         }
+
+        return .applied
     }
 }
 
@@ -172,7 +220,15 @@ extension SessionController: AuthenticationPerforming {
                 return .failed(.storageUnavailable)
             }
 
-            await applyCurrentUser(token: token)
+            // 换了一份凭证 = 换了一条会话：之前所有在飞的请求就此作废。
+            sessionGeneration += 1
+            let generation = sessionGeneration
+
+            guard await applyCurrentUser(token: token, generation: generation) == .applied else {
+                // 拉资料期间又发生了登出 / 又一次登录。那次操作更新，界面状态归它管；
+                // 本次认证请求本身确实成功了，如实回 authenticated，不谎报一个失败。
+                return .authenticated
+            }
 
             // 刚登录就被判未认证：凭证已在 applyCurrentUser 里清掉，如实报失败。
             if state == .unauthenticated {

@@ -53,7 +53,7 @@ struct AuthFormScreen: View {
             if let seconds = form.rateLimitRetryAfterSeconds {
                 Section {
                     RateLimitNoticeView(retryAfterSeconds: seconds) {
-                        form.clearFailure()
+                        form.clearRateLimit()
                     }
                     .font(.footnote)
                     .foregroundStyle(.red)
@@ -81,7 +81,8 @@ struct AuthFormScreen: View {
                         Spacer()
                     }
                 }
-                .disabled(form.isSubmitting)
+                // 限流期间也禁用：再点只会继续吃 429（web 基线同一条规则）。
+                .disabled(form.isSubmitBlocked)
 
                 if let onSwitchMode {
                     Button(AuthCopy.goToSignUp, action: onSwitchMode)

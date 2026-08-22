@@ -214,4 +214,94 @@ struct AuthFormModelTests {
         #expect(form.fieldErrors.isEmpty)
         #expect(authenticator.signInCalls.count == 1)
     }
+
+    // MARK: - 限流窗口
+
+    //
+    // 与 web 基线一致（apps/web/src/components/auth/sign-in-form.tsx:22
+    // `blocked = state.submitting || state.failure?.kind === "rate-limited"`，
+    // 且 web 表单非受控、编辑不清 failure）。窗口内再点只会继续吃 429，把窗口越拖越长。
+
+    @Test("限流窗口内一个请求都不许再发")
+    func rateLimitBlocksResubmission() async {
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [
+            .failed(.remote(.rateLimited(retryAfterSeconds: 10))),
+            .authenticated,
+        ]
+        let form = signInForm(authenticator)
+        form.email = "a@b.co"
+        form.password = "pw"
+
+        await form.submit()
+        #expect(form.rateLimitRetryAfterSeconds == 10)
+        #expect(form.isSubmitBlocked)
+
+        await form.submit()
+
+        #expect(authenticator.signInCalls.count == 1)
+        #expect(form.rateLimitRetryAfterSeconds == 10)
+    }
+
+    @Test("改动输入不清掉限流倒计时：限流不是换个输入就没了的错误")
+    func editingDoesNotClearRateLimit() async {
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [
+            .failed(.remote(.rateLimited(retryAfterSeconds: 10))),
+            .authenticated,
+        ]
+        let form = signInForm(authenticator)
+        form.email = "a@b.co"
+        form.password = "pw"
+        await form.submit()
+
+        // 界面上任一 .onChange 都会走到这里
+        form.password = "pw2"
+        form.clearFailure()
+
+        #expect(form.rateLimitRetryAfterSeconds == 10)
+        #expect(form.isSubmitBlocked)
+
+        await form.submit()
+        #expect(authenticator.signInCalls.count == 1)
+    }
+
+    @Test("倒计时走完才解除限流，之后可以重新提交")
+    func rateLimitClearsWhenCountdownExpires() async {
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [
+            .failed(.remote(.rateLimited(retryAfterSeconds: 10))),
+            .authenticated,
+        ]
+        let form = signInForm(authenticator)
+        form.email = "a@b.co"
+        form.password = "pw"
+        await form.submit()
+
+        // RateLimitNoticeView 的 onExpire 走这条
+        form.clearRateLimit()
+
+        #expect(form.rateLimitRetryAfterSeconds == nil)
+        #expect(form.isSubmitBlocked == false)
+
+        await form.submit()
+        #expect(authenticator.signInCalls.count == 2)
+    }
+
+    @Test("非限流的失败照旧随输入改动收掉，也不挡提交")
+    func nonRateLimitFailureStillClearsOnEdit() async {
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [.failed(.remote(.invalidCredentials)), .authenticated]
+        let form = signInForm(authenticator)
+        form.email = "a@b.co"
+        form.password = "wrong-password-x"
+        await form.submit()
+        #expect(form.isSubmitBlocked == false)
+
+        form.clearFailure()
+        #expect(form.submission == .idle)
+
+        await form.submit()
+        #expect(authenticator.signInCalls.count == 2)
+    }
 }

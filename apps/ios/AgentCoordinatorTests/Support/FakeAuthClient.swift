@@ -27,6 +27,10 @@ final class FakeAuthClient: AuthClient, @unchecked Sendable {
     var gate: AsyncGate?
     var signOutGate: AsyncGate?
 
+    /// 只让前 N 次 `/api/me` 挂在 `gate` 上。用来制造"旧请求还没回来、新请求已经回来了"
+    /// 的跨操作交错——两次调用都挂住就没法让后发的那次先完成。
+    var gatedCurrentUserCalls = Int.max
+
     func signUp(name: String, email: String, password: String) async -> Result<SessionToken, AuthRequestError> {
         lock.withLock {
             signUpCalls.append((name, email, password))
@@ -53,11 +57,14 @@ final class FakeAuthClient: AuthClient, @unchecked Sendable {
     }
 
     func currentUser(token: SessionToken) async -> Result<AuthUser, AuthRequestError> {
-        let next: Result<AuthUser, AuthRequestError> = lock.withLock {
+        let (next, callIndex): (Result<AuthUser, AuthRequestError>, Int) = lock.withLock {
             currentUserTokens.append(token)
-            return currentUserResults.isEmpty ? .failure(.transport(.other)) : currentUserResults.removeFirst()
+            let result = currentUserResults.isEmpty
+                ? Result<AuthUser, AuthRequestError>.failure(.transport(.other))
+                : currentUserResults.removeFirst()
+            return (result, currentUserTokens.count - 1)
         }
-        if let gate {
+        if let gate, callIndex < gatedCurrentUserCalls {
             await gate.wait()
         }
         return next

@@ -57,6 +57,8 @@ struct SignedInView: View {
                 }
             }
             .navigationTitle(AuthCopy.signedInTitle)
+            // 登出进行中的下拉刷新会被 SessionController 挡下（结果注定要丢）。
+            // 状态层自己防住竞态，这里只是省掉一次无意义的下拉动作。
             .refreshable { await session.refresh() }
         }
     }

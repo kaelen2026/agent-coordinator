@@ -75,6 +75,11 @@ iOS 16 会让每次状态变更刷新整棵子树。iOS 17 同时提供 `Content
 `APIBaseURL` 键进程序，业务代码只从 `AppConfiguration` 读。换环境只改 xcconfig，代码里
 没有任何硬编码地址。读不到就 `fail fast` 停在说明页，不兜底到某个猜测的地址。
 
+`Release.xcconfig` 的 `API_BASE_URL` **刻意留空**，发版环境必须显式传值（CI 覆盖 /
+私有 xcconfig）。填一个占位域名比留空更糟：它语法合法，会被静默打进包，用户看到的是
+「网络连接失败」而不是"这个包没配地址"——失败点从构建期挪到了用户设备上。留空则第一屏
+就是配置缺失说明页。
+
 **依赖注入：`AppLaunch.live()` 一处构造。** URLSession（ephemeral）、`LiveAuthClient`、
 `KeychainSessionTokenStore` 都在这里 new 一次往下传，业务代码不就地构造依赖，测试才能换成
 假实现。

@@ -34,6 +34,14 @@ final class AuthFormModel {
         submission == .submitting
     }
 
+    /// 提交按钮该不该被禁用。与 web 基线同一条规则
+    /// （`apps/web/src/components/auth/sign-in-form.tsx`:
+    /// `blocked = state.submitting || state.failure?.kind === "rate-limited"`）：
+    /// 限流窗口里再点也只会继续吃 429，把窗口越拖越长。
+    var isSubmitBlocked: Bool {
+        isSubmitting || rateLimitRetryAfterSeconds != nil
+    }
+
     var failureMessage: String? {
         guard case let .failed(failure) = submission else { return nil }
         switch failure {
@@ -50,7 +58,9 @@ final class AuthFormModel {
 
     func submit() async {
         // 进行中重复点击直接忽略：连点两次注册会白吃限流额度，也可能建出两次请求。
-        guard !isSubmitting else { return }
+        // 限流窗口内同样一个请求都不发——界面禁用了按钮只是第一道，状态层自己也要挡住，
+        // 否则一次注定 429 的请求会把窗口继续拖长。
+        guard !isSubmitBlocked else { return }
 
         let errors = validate()
         fieldErrors = errors
@@ -72,8 +82,20 @@ final class AuthFormModel {
     }
 
     /// 用户改动输入时把上一次的失败提示收掉，避免旧错误挂在新输入上。
+    ///
+    /// **限流是例外**：它说的是"这个 IP 这段时间内不许再来"，跟输入内容无关，改个字符
+    /// 并不会让服务端放行。抹掉倒计时只会诱导用户再点一次、再吃一次 429。窗口只能由
+    /// `clearRateLimit()`（倒计时走完）解除。web 表单非受控、编辑不清 failure，同一口径。
     func clearFailure() {
+        guard rateLimitRetryAfterSeconds == nil else { return }
         if case .failed = submission {
+            submission = .idle
+        }
+    }
+
+    /// 限流倒计时走完，解除窗口。只该由 `RateLimitNoticeView` 的 onExpire 调。
+    func clearRateLimit() {
+        if case .failed(.remote(.rateLimited)) = submission {
             submission = .idle
         }
     }

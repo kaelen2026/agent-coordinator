@@ -46,12 +46,29 @@ struct AppConfigurationTests {
         }
     }
 
-    @Test("从 Bundle 读 APIBaseURL：xcconfig 的值能落到运行时")
+    /// 刻意**不**断言某个构建配置的具体地址：那样 `-configuration Release` 跑测试必红，
+    /// 而测试不该依赖用哪个 xcconfig。这里钉的是"xcconfig 的值原样落到运行时"这条链路
+    /// （真实回归是 xcconfig 里 `//` 被当注释吃掉，Info.plist 拿到 `http:` 这种残值）。
+    @Test("Info.plist 里的 APIBaseURL 原样落到运行时配置")
     func loadsFromBundle() throws {
-        let config = try AppConfiguration.load(from: .main)
+        let raw = (Bundle.main.object(forInfoDictionaryKey: AppConfiguration.baseURLInfoKey) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        #expect(config.apiBaseURL.scheme == "http")
-        #expect(config.originHeaderValue == "http://localhost:3001")
+        guard !raw.isEmpty else {
+            // Release 的 API_BASE_URL 故意留空（发版环境必须显式传值），此时只准 fail fast，
+            // 不准兜底到某个猜测的地址。
+            #expect(throws: AppConfigurationError.missingBaseURL) {
+                _ = try AppConfiguration.load(from: .main)
+            }
+            return
+        }
+
+        let config = try AppConfiguration.load(from: .main)
+        let expected = try AppConfiguration(apiBaseURL: #require(URL(string: raw)))
+
+        #expect(config.apiBaseURL == expected.apiBaseURL)
+        #expect(config.originHeaderValue == expected.originHeaderValue)
+        #expect(config.apiBaseURL.host()?.isEmpty == false)
     }
 
     @Test("Bundle 里没有 APIBaseURL 时 fail fast，而不是兜底到某个地址")

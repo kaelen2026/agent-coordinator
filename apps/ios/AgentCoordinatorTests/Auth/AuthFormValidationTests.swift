@@ -73,13 +73,25 @@ struct AuthFormValidationTests {
         #expect(tooLong[.password] != nil)
     }
 
-    @Test("密码长度按字符数算，emoji 不被当成多位")
-    func countsPasswordByCharacters() {
-        let elevenEmoji = String(repeating: "👍", count: 11)
-        let twelveEmoji = String(repeating: "👍", count: 12)
+    @Test("密码长度按 UTF-16 码元算，与服务端 / web 同一把尺子")
+    func measuresPasswordByUTF16Length() {
+        // 服务端 better-auth 的 minPasswordLength/maxPasswordLength 判的是 JS String.length，
+        // 也就是 UTF-16 码元数。👍 是 1 个字素、2 个码元：按字素算两头都会判错——
+        // 11 个 👍（22 码元）服务端放行、客户端却拦下；128 个 👍（256 码元）客户端放行、
+        // 服务端回 PASSWORD_TOO_LONG。客户端不可热修，口径必须对齐服务端。
+        let fiveEmoji = String(repeating: "👍", count: 5) // 10 码元：短了
+        let sixEmoji = String(repeating: "👍", count: 6) // 12 码元：正好够
+        let elevenEmoji = String(repeating: "👍", count: 11) // 22 码元：服务端放行
+        let sixtyFourEmoji = String(repeating: "👍", count: 64) // 128 码元：上界
+        let sixtyFiveEmoji = String(repeating: "👍", count: 65) // 130 码元：超了
 
-        #expect(AuthFormValidation.validateSignUp(name: "F", email: "a@b.co", password: elevenEmoji)[.password] != nil)
-        #expect(AuthFormValidation.validateSignUp(name: "F", email: "a@b.co", password: twelveEmoji).isEmpty)
+        #expect(AuthFormValidation.validateSignUp(name: "F", email: "a@b.co", password: fiveEmoji)[.password] != nil)
+        #expect(AuthFormValidation.validateSignUp(name: "F", email: "a@b.co", password: sixEmoji).isEmpty)
+        #expect(AuthFormValidation.validateSignUp(name: "F", email: "a@b.co", password: elevenEmoji).isEmpty)
+        #expect(AuthFormValidation.validateSignUp(name: "F", email: "a@b.co", password: sixtyFourEmoji).isEmpty)
+        #expect(
+            AuthFormValidation.validateSignUp(name: "F", email: "a@b.co", password: sixtyFiveEmoji)[.password] != nil
+        )
     }
 
     @Test("注册缺姓名被拦下")
