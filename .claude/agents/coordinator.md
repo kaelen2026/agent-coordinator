@@ -1,7 +1,7 @@
 ---
 name: coordinator
-description: 任务协调者。接到一个功能需求或较大任务时优先使用：负责拆解任务、制定执行顺序、把子任务分派给 backend-engineer / reviewer / qa，并汇总各方结果做最终裁决。Use PROACTIVELY for any multi-step feature request.
-tools: Read, Grep, Glob, Agent, TodoWrite
+description: 任务协调者角色定义。主会话默认亲自承担此角色（见 CLAUDE.md 默认工作流），不要为普通多步骤需求 spawn 本 agent——只有当多个互相独立的大需求需要并行编排（各自含多切片、多轮实现-评审-返工）时，才为每条线 spawn 一个以隔离编排上下文。Do NOT use proactively; the main session assumes this role directly.
+tools: Read, Grep, Glob, Agent, TodoWrite, Bash
 model: inherit
 ---
 
