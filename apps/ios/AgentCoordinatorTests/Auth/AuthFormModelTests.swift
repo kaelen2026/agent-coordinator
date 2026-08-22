@@ -30,8 +30,14 @@ final class FakeAuthenticator: AuthenticationPerforming {
 @Suite("AuthFormModel：客户端校验 + 提交状态")
 @MainActor
 struct AuthFormModelTests {
-    private func signInForm(_ authenticator: FakeAuthenticator) -> AuthFormModel {
-        AuthFormModel(mode: .signIn, authenticator: authenticator)
+    private func signInForm(
+        _ authenticator: FakeAuthenticator,
+        clock: MutableClock? = nil
+    ) -> AuthFormModel {
+        guard let clock else {
+            return AuthFormModel(mode: .signIn, authenticator: authenticator)
+        }
+        return AuthFormModel(mode: .signIn, authenticator: authenticator, now: clock.now)
     }
 
     private func signUpForm(_ authenticator: FakeAuthenticator) -> AuthFormModel {
@@ -266,26 +272,83 @@ struct AuthFormModelTests {
         #expect(authenticator.signInCalls.count == 1)
     }
 
-    @Test("倒计时走完才解除限流，之后可以重新提交")
-    func rateLimitClearsWhenCountdownExpires() async {
+    @Test("窗口走完后收掉提示，之后可以重新提交")
+    func rateLimitClearsWhenWindowElapses() async {
+        let clock = MutableClock()
         let authenticator = FakeAuthenticator()
         authenticator.signInOutcomes = [
             .failed(.remote(.rateLimited(retryAfterSeconds: 10))),
             .authenticated,
         ]
-        let form = signInForm(authenticator)
+        let form = signInForm(authenticator, clock: clock)
         form.email = "a@b.co"
         form.password = "pw"
         await form.submit()
 
-        // RateLimitNoticeView 的 onExpire 走这条
+        clock.advance(by: 10)
+        // RateLimitNoticeView 的 onExpire 走这条：它只负责把过期的提示从界面上抹掉，
+        // 放不放行由截止时刻说了算
         form.clearRateLimit()
 
+        #expect(form.submission == .idle)
         #expect(form.rateLimitRetryAfterSeconds == nil)
         #expect(form.isSubmitBlocked == false)
 
         await form.submit()
         #expect(authenticator.signInCalls.count == 2)
+    }
+
+    @Test("切后台再回来不会重新计时：窗口按截止时刻算，不随倒计时视图的生死重启")
+    func rateLimitWindowIsMeasuredByDeadlineNotByCountdownView() async {
+        // 倒计时挂在视图生命周期上（.task 在离屏 / 切后台时被取消），它是"重启"不是"续跑"。
+        // 若窗口的唯一出口是倒计时走完的 onExpire，用户切个后台回来就要从头再数一遍，
+        // 封锁时长会超过服务端给的窗口 —— 那是在惩罚用户。
+        let clock = MutableClock()
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [
+            .failed(.remote(.rateLimited(retryAfterSeconds: 10))),
+            .authenticated,
+        ]
+        let form = signInForm(authenticator, clock: clock)
+        form.email = "a@b.co"
+        form.password = "pw"
+
+        await form.submit()
+        #expect(form.rateLimitRetryAfterSeconds == 10)
+        #expect(form.isSubmitBlocked)
+
+        // 用户切到后台 30 秒：倒计时的 .task 被取消，onExpire 一次都没触发过
+        clock.advance(by: 30)
+
+        // 服务端的窗口早就过去了，回来就该能提交
+        #expect(form.rateLimitRetryAfterSeconds == nil)
+        #expect(form.isSubmitBlocked == false)
+
+        await form.submit()
+        #expect(authenticator.signInCalls.count == 2)
+    }
+
+    @Test("窗口没走完就不解除：倒计时视图误触发 onExpire 也不放行")
+    func rateLimitWindowSurvivesPrematureExpiry() async {
+        let clock = MutableClock()
+        let authenticator = FakeAuthenticator()
+        authenticator.signInOutcomes = [
+            .failed(.remote(.rateLimited(retryAfterSeconds: 10))),
+            .authenticated,
+        ]
+        let form = signInForm(authenticator, clock: clock)
+        form.email = "a@b.co"
+        form.password = "pw"
+        await form.submit()
+
+        clock.advance(by: 4)
+        form.clearRateLimit()
+
+        #expect(form.rateLimitRetryAfterSeconds == 6)
+        #expect(form.isSubmitBlocked)
+
+        await form.submit()
+        #expect(authenticator.signInCalls.count == 1)
     }
 
     @Test("非限流的失败照旧随输入改动收掉，也不挡提交")

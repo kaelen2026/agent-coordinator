@@ -20,7 +20,10 @@ struct RootView: View {
                 SignedInView(session: session, user: user, showsProfile: false)
 
             case let .failed(failure):
-                FailureStateView(failure: failure) { await session.refresh() }
+                FailureStateView(
+                    failure: failure,
+                    rateLimitDeadline: session.stateRateLimitDeadline
+                ) { await session.refresh() }
 
             case .offline:
                 OfflineStateView { await session.refresh() }

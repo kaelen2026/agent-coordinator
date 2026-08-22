@@ -11,6 +11,13 @@ actor FakeSessionTokenStore: SessionTokenStore {
     private var failClear = false
     private(set) var clearCount = 0
     private(set) var saveCount = 0
+    private(set) var loadCount = 0
+
+    /// 让某一次读写在**动过底层存储之后**挂住，用来制造"Keychain 已经变了、调用方还没从
+    /// await 里恢复"的窗口 —— 跨操作的竞态就藏在这个窗口里，靠 sleep 撞不稳定。
+    private var saveGate: AsyncGate?
+    private var gatedSaveCall: Int?
+    private var loadGate: AsyncGate?
 
     init(stored: SessionToken? = nil) {
         self.stored = stored
@@ -22,15 +29,32 @@ actor FakeSessionTokenStore: SessionTokenStore {
         failClear = clear
     }
 
+    /// 第 `call` 次 save（从 1 开始计）在写入之后挂住。
+    func setSaveGate(_ gate: AsyncGate, onCall call: Int) {
+        saveGate = gate
+        gatedSaveCall = call
+    }
+
+    /// load 在**读到值之后**挂住：模拟一次慢的 Keychain 读——它读到的是那一刻的状态，
+    /// 恢复时外面可能已经换了一条会话。
+    func setLoadGate(_ gate: AsyncGate) {
+        loadGate = gate
+    }
+
     func currentToken() -> SessionToken? {
         stored
     }
 
     func load() async throws -> SessionToken? {
+        loadCount += 1
         if failLoad {
             throw Boom()
         }
-        return stored
+        let snapshot = stored
+        if let loadGate {
+            await loadGate.wait()
+        }
+        return snapshot
     }
 
     func save(_ token: SessionToken) async throws {
@@ -39,6 +63,9 @@ actor FakeSessionTokenStore: SessionTokenStore {
             throw Boom()
         }
         stored = token
+        if let saveGate, saveCount == gatedSaveCall {
+            await saveGate.wait()
+        }
     }
 
     func clear() async throws {

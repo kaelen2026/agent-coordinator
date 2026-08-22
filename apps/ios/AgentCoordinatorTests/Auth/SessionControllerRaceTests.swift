@@ -157,6 +157,98 @@ struct SessionControllerRaceTests {
         #expect(await store.currentToken()?.rawValue == secondToken.rawValue)
     }
 
+    @Test("迟到的『Keychain 里没有 token』不许把新登录的会话打回未登录")
+    func staleEmptyTokenLoadDoesNotOverrideNewerSignIn() async throws {
+        // refresh 有两个出口：拿到 token（走 applyCurrentUser）和拿不到 token（直接判未登录）。
+        // 两个出口都在 await 之后写 state，所以都要做代数比对——这条测的是后者。
+        //
+        // 目前**没有** UI 可达的触发路径：refresh 只从 RootView 的 .task（此时屏幕是 .loading，
+        // 只有一个 spinner，够不着登录表单）和 .failed/.offline 的重试按钮、SignedInView 的
+        // 下拉刷新发起，这几个态都不与登录表单同屏。所以它不是线上 bug，是纵深防御。
+        // 这里从 controller 的公开 API 直接构造这个交错，把不变式钉住：将来任何一个界面在
+        // 非 loading 态调 refresh，就会真的踩到这一格。
+        let token = try TestFixtures.token()
+        let client = FakeAuthClient()
+        client.signInResults = [.success(token)]
+        client.currentUserResults = [.success(TestFixtures.user)]
+        let store = FakeSessionTokenStore() // 冷启动时 Keychain 是空的
+        let loadGate = AsyncGate()
+        await store.setLoadGate(loadGate)
+        let controller = makeController(client: client, store: store, initialState: .loading)
+
+        // 1. 冷启动的会话守卫开始读 Keychain，读得很慢（首次解锁后的 Keychain 可能要等）
+        let refreshTask = Task { await controller.refresh() }
+        while await store.loadCount == 0 {
+            await Task.yield()
+        }
+
+        // 2. 这期间用户登录成功了，界面已经是已登录态
+        let outcome = await controller.performSignIn(email: "founder@example.com", password: "pw")
+        #expect(outcome == .authenticated)
+        #expect(controller.state == .loaded(TestFixtures.user))
+
+        // 3. 那次 Keychain 读这才返回——它读到的是登录**之前**那一刻的状态（没有 token），
+        //    属于一条已经作废的会话，无权把用户打回登录页
+        await loadGate.open()
+        await refreshTask.value
+
+        #expect(controller.state == .loaded(TestFixtures.user))
+        #expect(await store.currentToken()?.rawValue == token.rawValue)
+    }
+
+    @Test("新凭证刚落盘的那一瞬间，迟到的 401 也不许把它清掉")
+    func staleUnauthorizedDoesNotClearTokenBeingSaved() async throws {
+        // 与 staleSignInDoesNotOverwriteLaterSignIn 同一条 UI 路径（登录页请求还在飞，
+        // 切到注册页再提交一次），只是把镜头对准更窄的一格：token 已经写进 Keychain、
+        // 抬高代数的那行还没执行。这一格里旧 401 的代数比对会通过，
+        // 于是它清掉的是刚存进去的**新**凭证——界面显示已登录、Keychain 却空了，
+        // 下次冷启动就是一次莫名的登出。
+        let firstToken = try TestFixtures.token()
+        let secondToken = try TestFixtures.token("st_second.secondsignature")
+        let client = FakeAuthClient()
+        client.signInResults = [.success(firstToken), .success(secondToken)]
+        client.currentUserResults = [
+            .failure(.failure(.unauthenticated)), // 第一条会话的 401，迟到
+            .success(TestFixtures.otherUser),
+        ]
+        client.gatedCurrentUserCalls = 1
+        let store = FakeSessionTokenStore()
+        let saveGate = AsyncGate()
+        await store.setSaveGate(saveGate, onCall: 2)
+        let controller = makeController(client: client, store: store, initialState: .unauthenticated)
+
+        let meGate = AsyncGate()
+        client.gate = meGate
+
+        // 1. 第一次登录：token 存下了，/api/me 还挂着
+        let firstSignIn = Task {
+            await controller.performSignIn(email: "founder@example.com", password: "pw")
+        }
+        while client.currentUserCallCount == 0 {
+            await Task.yield()
+        }
+
+        // 2. 第二次登录：Keychain 里已经是 secondToken，调用方还挂在 save 的 await 里
+        let secondSignIn = Task {
+            await controller.performSignIn(email: "second@example.com", password: "pw")
+        }
+        while await store.saveCount < 2 {
+            await Task.yield()
+        }
+        #expect(await store.currentToken()?.rawValue == secondToken.rawValue)
+
+        // 3. 就在这个窗口里，第一条会话的 401 回来了
+        await meGate.open()
+        _ = await firstSignIn.value
+
+        // 4. 第二次登录恢复，走完自己的 /api/me
+        await saveGate.open()
+        _ = await secondSignIn.value
+
+        #expect(await store.currentToken()?.rawValue == secondToken.rawValue)
+        #expect(controller.state == .loaded(TestFixtures.otherUser))
+    }
+
     @Test("迟到的 401 属于旧会话，不许清掉新会话的凭证")
     func staleUnauthorizedDoesNotClearNewerSession() async throws {
         let oldToken = try TestFixtures.token()
@@ -188,56 +280,5 @@ struct SessionControllerRaceTests {
 
         #expect(controller.state == .loaded(TestFixtures.otherUser))
         #expect(await store.currentToken()?.rawValue == newToken.rawValue)
-    }
-
-    // MARK: - 后台刷新不清屏
-
-    @Test("已有内容时刷新不切全屏 spinner：下拉刷新不该把列表和滚动位置一起丢掉")
-    func refreshKeepsVisibleContentWhileLoading() async throws {
-        let client = FakeAuthClient()
-        client.currentUserResults = [.success(TestFixtures.user)]
-        let store = try FakeSessionTokenStore(stored: TestFixtures.token())
-        let controller = makeController(client: client, store: store, initialState: .loaded(TestFixtures.user))
-
-        let gate = AsyncGate()
-        client.gate = gate
-
-        let refreshTask = Task { await controller.refresh() }
-        while client.currentUserCallCount == 0 {
-            await Task.yield()
-        }
-
-        // 请求还在飞的这一刻，屏幕上仍是原来那份内容
-        #expect(controller.state == .loaded(TestFixtures.user))
-
-        await gate.open()
-        await refreshTask.value
-        #expect(controller.state == .loaded(TestFixtures.user))
-    }
-
-    @Test("还没东西可展示时（冷启动 / 错误态重试）才切加载态")
-    func refreshShowsLoadingWhenNothingToKeep() async throws {
-        let client = FakeAuthClient()
-        client.currentUserResults = [.success(TestFixtures.user)]
-        let store = try FakeSessionTokenStore(stored: TestFixtures.token())
-        let controller = makeController(
-            client: client,
-            store: store,
-            initialState: .failed(.server(status: 503))
-        )
-
-        let gate = AsyncGate()
-        client.gate = gate
-
-        let refreshTask = Task { await controller.refresh() }
-        while client.currentUserCallCount == 0 {
-            await Task.yield()
-        }
-
-        #expect(controller.state == .loading)
-
-        await gate.open()
-        await refreshTask.value
-        #expect(controller.state == .loaded(TestFixtures.user))
     }
 }

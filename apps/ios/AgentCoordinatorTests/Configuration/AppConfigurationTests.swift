@@ -78,6 +78,22 @@ struct AppConfigurationTests {
         }
     }
 
+    @Test("漏配的两种运维错误文案可区分，且都不把地址本身印在界面上")
+    func misconfiguredCopyDistinguishesTheTwoOperationalMistakes() {
+        let secretishURL = "https://api.internal.example/gateway"
+        let missing = AuthCopy.misconfiguredDescription(for: .missingBaseURL)
+        let malformed = AuthCopy.misconfiguredDescription(for: .malformedBaseURL(secretishURL))
+
+        // 「根本没传值」和「传了个不合法的值」排查方向完全不同，界面得分得清
+        #expect(missing != malformed)
+        #expect(missing.isEmpty == false)
+        #expect(malformed.isEmpty == false)
+
+        // 那个地址可能是内网域名，截图一发就外流（security.md）
+        #expect(malformed.contains(secretishURL) == false)
+        #expect(malformed.contains("internal") == false)
+    }
+
     @Test("endpoint 拼接不吃掉 base URL 的路径前缀")
     func buildsEndpointsUnderBasePath() throws {
         let config = try AppConfiguration(apiBaseURL: #require(URL(string: "https://example.com/gateway")))

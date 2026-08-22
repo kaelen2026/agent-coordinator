@@ -68,7 +68,22 @@ enum AuthCopy {
     static let retry = "重试"
     static let errorTitle = "没能读到登录状态"
     static let misconfiguredTitle = "App 配置有问题"
-    static let misconfiguredDescription = "没有可用的服务端地址，这台设备上的这个版本没法登录。请联系发布方。"
+
+    /// 漏配时这一屏是必经首屏（`Release.xcconfig` 的 `API_BASE_URL` 刻意留空），所以它必须能
+    /// 区分两种运维错误：**根本没传值**（发版流程漏了覆盖 xcconfig）与**传了个不合法的值**
+    /// （CI 变量拼错、协议写错）。两者排查方向完全不同，文案一模一样等于把诊断信息扔了。
+    ///
+    /// 刻意不把那个地址本身印在界面上：它可能是内网域名，截图一发就外流了（security.md）。
+    /// 真正的值在包的 Info.plist 里查得到，不需要显示给用户。
+    static func misconfiguredDescription(for error: AppConfigurationError) -> String {
+        switch error {
+        case .missingBaseURL:
+            "这个版本没有打进服务端地址，没法登录。请联系发布方重新出包。"
+        case .malformedBaseURL:
+            "打进这个版本的服务端地址不是合法的 http/https 地址，没法登录。请联系发布方检查发布配置。"
+        }
+    }
+
     static let signedInTitle = "我的账号"
     static let profileSection = "账号资料"
     static let nameField = "姓名"

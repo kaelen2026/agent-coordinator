@@ -50,9 +50,11 @@ struct AuthFormScreen: View {
                 }
             }
 
-            if let seconds = form.rateLimitRetryAfterSeconds {
+            // 用截止时刻而不是剩余秒数驱动：秒数每跳一次都会变，拿它当 .task(id:)
+            // 会把倒计时每秒重启一遍；截止时刻在一个窗口内是常量。
+            if let deadline = form.rateLimitedUntil {
                 Section {
-                    RateLimitNoticeView(retryAfterSeconds: seconds) {
+                    RateLimitNoticeView(deadline: deadline) {
                         form.clearRateLimit()
                     }
                     .font(.footnote)

@@ -23,11 +23,28 @@ final class AuthFormModel {
     private(set) var fieldErrors: [AuthFormField: String] = [:]
     private(set) var submission: Submission = .idle
 
-    private let authenticator: any AuthenticationPerforming
+    /// 限流窗口的**截止时刻**。
+    ///
+    /// 刻意存截止时间而不是剩余秒数：秒数只有配合"从什么时候开始数"才有意义，而倒计时是挂在
+    /// 视图生命周期上的（`.task` 在离屏 / 切后台时被取消，回来是**重启**不是续跑）。用倒计时
+    /// 当窗口的唯一出口，切个后台回来就要从头再数一遍，封锁时长会超过服务端给的窗口——
+    /// 那是在惩罚用户。截止时刻与视图在不在场无关。
+    ///
+    /// 恒等式：它只在 `submission` 是限流失败时非 nil，靠 `setSubmission` 一处维护，
+    /// 避免"提示是这个错、窗口是那个错"的两份真相。
+    private(set) var rateLimitedUntil: Date?
 
-    init(mode: Mode, authenticator: any AuthenticationPerforming) {
+    private let authenticator: any AuthenticationPerforming
+    private let now: DateProvider
+
+    init(
+        mode: Mode,
+        authenticator: any AuthenticationPerforming,
+        now: @escaping DateProvider = systemDateProvider
+    ) {
         self.mode = mode
         self.authenticator = authenticator
+        self.now = now
     }
 
     var isSubmitting: Bool {
@@ -39,7 +56,13 @@ final class AuthFormModel {
     /// `blocked = state.submitting || state.failure?.kind === "rate-limited"`）：
     /// 限流窗口里再点也只会继续吃 429，把窗口越拖越长。
     var isSubmitBlocked: Bool {
-        isSubmitting || rateLimitRetryAfterSeconds != nil
+        isSubmitting || isRateLimited
+    }
+
+    /// 限流窗口是否还没过去。判据是墙钟时间与截止时刻，与倒计时视图在不在场无关。
+    var isRateLimited: Bool {
+        guard let rateLimitedUntil else { return false }
+        return now() < rateLimitedUntil
     }
 
     var failureMessage: String? {
@@ -50,10 +73,13 @@ final class AuthFormModel {
         }
     }
 
-    /// 限流时的等待秒数，供界面倒计时。秒数来自响应头，不是写死的常量。
+    /// 还要等几秒，供界面倒计时。由截止时刻实时算出来，所以切后台再回来拿到的是**剩余**
+    /// 秒数而不是重新开始的整段窗口；窗口已经过去就是 nil。
     var rateLimitRetryAfterSeconds: Int? {
-        guard case let .failed(.remote(.rateLimited(seconds))) = submission else { return nil }
-        return seconds
+        guard let rateLimitedUntil else { return nil }
+        let remaining = rateLimitedUntil.timeIntervalSince(now())
+        guard remaining > 0 else { return nil }
+        return Int(remaining.rounded(.up))
     }
 
     func submit() async {
@@ -65,38 +91,52 @@ final class AuthFormModel {
         let errors = validate()
         fieldErrors = errors
         guard errors.isEmpty else {
-            submission = .idle
+            setSubmission(.idle)
             return
         }
 
-        submission = .submitting
+        setSubmission(.submitting)
 
         switch await performRequest() {
         case .authenticated:
             // 成功后不把密码留在内存里
             password = ""
-            submission = .idle
+            setSubmission(.idle)
         case let .failed(failure):
-            submission = .failed(failure)
+            setSubmission(.failed(failure))
         }
     }
 
     /// 用户改动输入时把上一次的失败提示收掉，避免旧错误挂在新输入上。
     ///
     /// **限流是例外**：它说的是"这个 IP 这段时间内不许再来"，跟输入内容无关，改个字符
-    /// 并不会让服务端放行。抹掉倒计时只会诱导用户再点一次、再吃一次 429。窗口只能由
-    /// `clearRateLimit()`（倒计时走完）解除。web 表单非受控、编辑不清 failure，同一口径。
+    /// 并不会让服务端放行。抹掉倒计时只会诱导用户再点一次、再吃一次 429。
+    /// web 表单非受控、编辑不清 failure，同一口径。
     func clearFailure() {
-        guard rateLimitRetryAfterSeconds == nil else { return }
+        guard !isRateLimited else { return }
         if case .failed = submission {
-            submission = .idle
+            setSubmission(.idle)
         }
     }
 
-    /// 限流倒计时走完，解除窗口。只该由 `RateLimitNoticeView` 的 onExpire 调。
+    /// 窗口过去之后收掉限流提示。由 `RateLimitNoticeView` 的 onExpire 调，但它**不是**
+    /// 窗口的出口——能不能提交由 `rateLimitedUntil` 决定，视图不在场时窗口照样会到期，
+    /// 这里只负责把已经过期的提示从界面上抹掉。窗口还没走完就误触发也不放行。
     func clearRateLimit() {
+        guard !isRateLimited else { return }
         if case .failed(.remote(.rateLimited)) = submission {
-            submission = .idle
+            setSubmission(.idle)
+        }
+    }
+
+    /// `submission` 的唯一写入口：顺带把限流窗口的截止时刻算好 / 清掉，
+    /// 保证"界面显示的失败"与"挡不挡提交的窗口"永远说的是同一件事。
+    private func setSubmission(_ next: Submission) {
+        submission = next
+        if case let .failed(.remote(.rateLimited(seconds))) = next {
+            rateLimitedUntil = now().addingTimeInterval(TimeInterval(seconds))
+        } else {
+            rateLimitedUntil = nil
         }
     }
 

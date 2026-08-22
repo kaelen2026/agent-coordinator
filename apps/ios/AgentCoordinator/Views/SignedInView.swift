@@ -31,8 +31,8 @@ struct SignedInView: View {
 
                 if let failure = session.signOutFailure {
                     Section {
-                        if case let .rateLimited(seconds) = failure {
-                            RateLimitNoticeView(retryAfterSeconds: seconds)
+                        if let deadline = session.signOutRateLimitDeadline {
+                            RateLimitNoticeView(deadline: deadline)
                                 .font(.footnote)
                                 .foregroundStyle(.red)
                         } else {

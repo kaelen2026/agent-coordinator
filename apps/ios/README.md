@@ -88,6 +88,14 @@ iOS 16 会让每次状态变更刷新整棵子树。iOS 17 同时提供 `Content
 / `SessionTokenStore`（Keychain）→ `HTTPTransport`。View 里没有网络调用和数据变换；
 契约模型集中在 `Contracts/`，据 `packages/contracts` 手写，不另立一套定义。
 
+**限流窗口存截止时刻，不存剩余秒数。** 429 的 `Retry-After` 是秒数，但客户端一落地就换算成
+截止时刻（`AuthFormModel.rateLimitedUntil` / `SessionController` 的两个 `*RateLimitedUntil`），
+"还能不能提交"由 `now() < deadline` 判定。倒计时 View 是挂在视图生命周期上的（`.task` 在离屏、
+切后台时被取消），回来是**重启**不是续跑；把窗口的出口绑在它身上，用户切个后台回来就要从头
+再数一遍，封锁时长会超过服务端给的窗口——等于替服务端惩罚用户。截止时刻与视图在不在场无关，
+倒计时于是退化成纯展示，每跳一次拿墙钟对着截止时刻重算。时钟经初始化器注入（`DateProvider`），
+测试用 `MutableClock` 把时间拨快，不真的等。
+
 ## 会话凭证
 
 原生客户端走 bearer token，不碰 cookie：

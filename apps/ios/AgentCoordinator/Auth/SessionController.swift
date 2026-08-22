@@ -51,7 +51,17 @@ final class SessionController {
 
     private let client: any AuthClient
     private let tokenStore: any SessionTokenStore
+    private let now: DateProvider
     private var isRefreshing = false
+
+    /// 限流窗口的截止时刻，两条失败通道各一个。
+    ///
+    /// 与 `AuthFormModel.rateLimitedUntil` 同一条原则：存截止时刻而不是秒数——倒计时挂在
+    /// 视图生命周期上，离屏 / 切后台被取消再回来是**重启**不是续跑，用秒数当起点就会从头再数。
+    /// 这两个值只经下面的计算属性读出去，读时会连着核对对应通道当前确实是限流失败，
+    /// 所以不需要在每个赋值点补一次清理（新的限流失败一定连着新的截止时刻一起写）。
+    private var stateRateLimitedUntil: Date?
+    private var signOutRateLimitedUntil: Date?
 
     /// 会话代数。本地凭证每变一次（存进新 token、清掉 token）就 +1。
     ///
@@ -62,10 +72,28 @@ final class SessionController {
     /// 不一致说明这条会话已经作废，结果直接丢弃。
     private var sessionGeneration = 0
 
-    init(client: any AuthClient, tokenStore: any SessionTokenStore, initialState: State = .loading) {
+    init(
+        client: any AuthClient,
+        tokenStore: any SessionTokenStore,
+        initialState: State = .loading,
+        now: @escaping DateProvider = systemDateProvider
+    ) {
         self.client = client
         self.tokenStore = tokenStore
+        self.now = now
         state = initialState
+    }
+
+    /// 界面态那条限流失败的窗口截止时刻。
+    var stateRateLimitDeadline: Date? {
+        guard case .failed(.rateLimited) = state else { return nil }
+        return stateRateLimitedUntil
+    }
+
+    /// 登出失败提示里那条限流的窗口截止时刻。
+    var signOutRateLimitDeadline: Date? {
+        guard case .rateLimited = signOutFailure else { return nil }
+        return signOutRateLimitedUntil
     }
 
     /// 冷启动的会话守卫，也是错误/离线态的重试入口。
@@ -116,8 +144,16 @@ final class SessionController {
             await discardStoredToken()
             state = .unauthenticated
         case let .failed(error):
-            signOutFailure = error.displayFailure
+            let failure = error.displayFailure
+            signOutFailure = failure
+            signOutRateLimitedUntil = rateLimitDeadline(for: failure)
         }
+    }
+
+    /// 限流失败 → 窗口截止时刻；其他失败没有窗口。
+    private func rateLimitDeadline(for failure: AuthFailure) -> Date? {
+        guard case let .rateLimited(seconds) = failure else { return nil }
+        return now().addingTimeInterval(TimeInterval(seconds))
     }
 
     // MARK: - 内部
@@ -134,6 +170,10 @@ final class SessionController {
 
     /// 作废当前会话的本地凭证。无论 Keychain 删没删掉，代数都要 +1：
     /// "这条会话不算数了"是意图，不取决于删除操作的成败。
+    ///
+    /// 与 `adoptSession` 里那次 +1 是**同一条不变式**的两个入口（凭证的两种变化：清掉 / 换新），
+    /// 两边都必须在 `await` 触碰 Keychain **之前**抬高代数——中间那一格窗口里，
+    /// 迟到的旧结果会误判自己还属于当前会话。改一边就要改另一边，别把它们拆开。
     private func discardStoredToken() async {
         sessionGeneration += 1
         do {
@@ -173,7 +213,9 @@ final class SessionController {
                 state = .offline
             } else {
                 // 网络抖动 / 服务端 5xx / 限流都不等于登出，别把一次抖动变成一次莫名的登出。
-                state = .failed(error.displayFailure)
+                let failure = error.displayFailure
+                state = .failed(failure)
+                stateRateLimitedUntil = rateLimitDeadline(for: failure)
             }
         }
 
@@ -212,6 +254,16 @@ extension SessionController: AuthenticationPerforming {
             return .failed(.remote(error.displayFailure))
 
         case let .success(token):
+            // 换了一份凭证 = 换了一条会话：之前所有在飞的请求就此作废。
+            //
+            // 这两行必须在 `save` 的 await **之前**，理由与 `discardStoredToken` 完全相同
+            // （那是同一条不变式的另一个入口）：代数表达的是"从这一刻起换了一条会话"这个**意图**，
+            // 不取决于 Keychain 写入的成败与耗时。放在 save 之后会留下一格"新凭证已落盘、
+            // 代数尚未抬高"的窗口——迟到的旧 401 在这一格里能通过代数比对，
+            // 把刚存进去的新凭证清掉（`staleUnauthorizedDoesNotClearTokenBeingSaved` 钉住这一格）。
+            sessionGeneration += 1
+            let generation = sessionGeneration
+
             do {
                 try await tokenStore.save(token)
             } catch {
@@ -220,13 +272,15 @@ extension SessionController: AuthenticationPerforming {
                 return .failed(.storageUnavailable)
             }
 
-            // 换了一份凭证 = 换了一条会话：之前所有在飞的请求就此作废。
-            sessionGeneration += 1
-            let generation = sessionGeneration
-
             guard await applyCurrentUser(token: token, generation: generation) == .applied else {
-                // 拉资料期间又发生了登出 / 又一次登录。那次操作更新，界面状态归它管；
-                // 本次认证请求本身确实成功了，如实回 authenticated，不谎报一个失败。
+                // 拉资料期间又发生了登出 / 又一次登录。那次操作更新，界面状态归它管。
+                //
+                // 之所以能安全地回 authenticated：这个返回值只影响**表单局部呈现**，不驱动路由——
+                // `AuthFormModel.submit()` 拿到它只是清密码 + 把 submission 置回 idle，
+                // 进哪个页面完全由 `RootView` 读 `session.state` 决定。本次认证请求本身确实成功了，
+                // 报一个失败反而会在界面上留下一条与事实不符的错误提示。
+                // 若日后给 outcome 加上导航语义（比如"成功就 push 到某页"），这条理由就不成立了，
+                // 必须重新判断——那时 superseded 应当有自己的返回值。
                 return .authenticated
             }
 
