@@ -51,3 +51,4 @@ pnpm --filter=@agent-coordinator/web dev     # web 监听 3000（另开终端）
 - [`apps/web/DESIGN.md`](./apps/web/DESIGN.md) — Web 端设计系统（终端操作台方向），一切 UI 工作的视觉约束来源
 - [`apps/web/e2e/README.md`](./apps/web/e2e/README.md) — 认证流程真实浏览器验收：为什么存在、怎么跑、端口被占怎么办
 - [`apps/ios/README.md`](./apps/ios/README.md) — iOS 工程约定与会话凭证形态（bearer token）
+- [`DECISIONS.md`](./DECISIONS.md) — 决策日志（只增不改）：非显然决策的取舍、前提与重审条件
