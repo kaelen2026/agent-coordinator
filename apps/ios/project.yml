@@ -1,0 +1,95 @@
+name: AgentCoordinator
+
+options:
+  bundleIdPrefix: dev.agentcoordinator
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+  groupSortPosition: top
+
+configs:
+  Debug: debug
+  Release: release
+
+# API 地址等环境相关配置只在 xcconfig 里出现，经 Info.plist 进程序，业务代码从
+# AppConfiguration 读（.claude/rules/architecture.md：代码中不出现硬编码地址）。
+configFiles:
+  Debug: Configuration/Debug.xcconfig
+  Release: Configuration/Release.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    # 模拟器构建走 ad-hoc 签名（不需要开发者账号）。不能整体关掉签名：
+    # 未签名的 App 在模拟器上装得上但起不来（preflight checks 失败），
+    # 而单元测试宿主在 App 里跑，起不来就一条测试都跑不了。
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: NO
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  AgentCoordinator:
+    type: application
+    platform: iOS
+    sources:
+      - path: AgentCoordinator
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.agentcoordinator.ios
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Configuration/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+
+  AgentCoordinatorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AgentCoordinatorTests
+    # 依赖 App：XcodeGen 据此设置 TEST_HOST/BUNDLE_LOADER，测试进程跑在 App 里。
+    # Keychain 需要进程带 application-identifier entitlement，无宿主的 test bundle
+    # 访问 Keychain 会拿到 errSecMissingEntitlement (-34018)。
+    dependencies:
+      - target: AgentCoordinator
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.agentcoordinator.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  # 默认 scheme：不注入联调开关，于是 LiveApiIntegrationTests 整个套件被 .enabled(if:)
+  # 跳过，`xcodebuild test` 不依赖任何外部进程（testing.md：测试必须可重复）。
+  AgentCoordinator:
+    build:
+      targets:
+        AgentCoordinator: all
+        AgentCoordinatorTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - AgentCoordinatorTests
+
+  # 联调 scheme：跑全量测试 + 打真实 api 的联调套件，需要本地起着 api（见 README）。
+  # 开关只能由 scheme 注入 —— 宿主在 App 里跑的测试拿不到 xcodebuild 命令行上的环境
+  # 变量，`TEST_RUNNER_` 前缀对这种 test bundle 也不生效（两种都实测过）。
+  AgentCoordinatorIntegration:
+    build:
+      targets:
+        AgentCoordinator: all
+        AgentCoordinatorTests: [test]
+    test:
+      config: Debug
+      environmentVariables:
+        IOS_API_INTEGRATION: "1"
+      targets:
+        - AgentCoordinatorTests

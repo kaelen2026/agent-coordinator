@@ -1,0 +1,8 @@
+// Release 的 api 地址必须由发版环境显式提供（CI 传值 / 私有 xcconfig 覆盖），
+// 这里**刻意留空**而不是填一个占位域名。
+//
+// 占位值语法合法，会被静默打进 Release 包：DNS 解析失败，用户看到的是「网络连接失败」，
+// 排查方向被引向"我的网怎么了"，而真正的问题是漏配。留空则 AppConfiguration.load
+// 抛 missingBaseURL，App 第一屏就是"配置缺失"说明页——fail fast，问题指向配置本身。
+// （同一口径见仓库根 .env.example 对 NEXT_PUBLIC_API_BASE_URL 的告诫。）
+API_BASE_URL =

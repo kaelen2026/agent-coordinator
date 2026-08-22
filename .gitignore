@@ -11,6 +11,16 @@ build/
 coverage/
 *.tsbuildinfo
 
+# iOS（apps/ios）
+# .xcodeproj 由 `xcodegen generate` 从 project.yml 生成，不入库——避免那份巨大的
+# 二进制式 pbxproj 制造无意义冲突。入库的是 project.yml + 源码。
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+*.xcresult/
+.swiftpm/
+
 # 编辑器 / 系统
 .vscode/
 .DS_Store

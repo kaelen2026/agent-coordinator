@@ -1,0 +1,53 @@
+# 只开对本仓库有实际约束力的规则；风格类交给 swiftformat，避免两个工具互相打架。
+included:
+  - AgentCoordinator
+  - AgentCoordinatorTests
+
+disabled_rules:
+  - todo
+  - trailing_comma          # 与 swiftformat 的 --commas always 冲突
+  - opening_brace           # 同上，由 swiftformat 负责
+
+opt_in_rules:
+  - force_unwrapping        # swift.md：禁止对外部数据强制解包
+  - empty_count
+  - first_where
+  - last_where
+  - redundant_nil_coalescing
+  - unavailable_function
+  - implicitly_unwrapped_optional
+
+line_length:
+  warning: 120
+  error: 140
+  ignores_comments: true
+
+type_body_length:
+  warning: 400
+  error: 600
+
+file_length:
+  warning: 500
+  error: 800
+
+function_body_length:
+  warning: 60
+  error: 100
+
+identifier_name:
+  min_length: 2
+  excluded: [id, to, at]
+
+# 对枚举做穷尽 switch 时圈复杂度天然偏高，而穷尽正是想要的性质（新增分支编译期报错）。
+cyclomatic_complexity:
+  warning: 16
+  error: 24
+
+# `Type.NestedType.CodingKeys` 是 Swift 的常规写法，两层不算坏味道。
+nesting:
+  type_level: 2
+
+# 测试里的假实现用元组记录调用参数（name/email/password），三元组是最贴切的表达。
+large_tuple:
+  warning: 3
+  error: 4
