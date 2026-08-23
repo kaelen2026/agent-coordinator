@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { createAuth } from "./modules/auth/index.js";
+import { createTaskRepo } from "./modules/task/index.js";
 import { createDb, createPool } from "./shared/db.js";
 import { loadConfig } from "./shared/env.js";
 import { describeError, installConsoleRedaction } from "./shared/log-redaction.js";
@@ -30,11 +32,15 @@ const db = createDb(pool);
 
 const app = createApp({
   auth: createAuth(db, config.auth),
+  // 任务 id 用 UUID：对外不透明、不可遍历，也不泄露"总共有多少条"。
+  // 生成器注入而不是在 service 里直接调，测试才能拿到确定的 id。
+  tasks: { repo: createTaskRepo(db), newId: () => randomUUID() },
   rateLimiter: createRateLimiter(db, {
     retentionSeconds: retentionSecondsFor(config.rateLimit.windowSeconds),
   }),
   rateLimit: config.rateLimit,
   allowedOrigins: config.auth.trustedOrigins,
+  apiBaseUrl: config.auth.baseUrl,
   trustedProxies: config.auth.trustedProxies,
   maxBodyBytes: config.http.maxBodyBytes,
 });

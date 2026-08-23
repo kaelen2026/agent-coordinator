@@ -1,12 +1,11 @@
 import type { MeResponse } from "@agent-coordinator/contracts";
 import { Hono } from "hono";
-import { AUTH_BASE_PATH, type AuthGateway } from "./auth.js";
+import { AUTH_BASE_PATH, type AuthGateway, readSessionFrom } from "./auth.js";
 import { type AuthEnv, requireAuth } from "./middleware.js";
-import type { ReadSession } from "./service.js";
 
 // 路由层只做挂载/解析/序列化；业务判断在 service，无 if。
 export const createAuthRoutes = (auth: AuthGateway) => {
-  const readSession: ReadSession = (headers) => auth.api.getSession({ headers });
+  const readSession = readSessionFrom(auth);
 
   return (
     new Hono<AuthEnv>()

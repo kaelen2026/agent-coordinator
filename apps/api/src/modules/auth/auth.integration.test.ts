@@ -18,6 +18,7 @@ import { type AppConfig, loadConfig } from "../../shared/env.js";
 import { installConsoleRedaction } from "../../shared/log-redaction.js";
 import { createRateLimiter } from "../../shared/rate-limit.js";
 import { apiRateLimit } from "../../shared/rate-limit.schema.js";
+import { createTaskRepo } from "../task/index.js";
 import { createAuth } from "./auth.js";
 import { account, rateLimit, session, user } from "./schema.js";
 
@@ -35,9 +36,11 @@ const rateLimiter = createRateLimiter(db);
 const makeApp = (overrides: Partial<AppDeps> = {}) =>
   createApp({
     auth,
+    tasks: { repo: createTaskRepo(db), newId: () => randomUUID() },
     rateLimiter,
     rateLimit: { windowSeconds: 60, max: 10_000 },
     allowedOrigins: config.auth.trustedOrigins,
+    apiBaseUrl: config.auth.baseUrl,
     trustedProxies: [],
     maxBodyBytes: config.http.maxBodyBytes,
     ...overrides,

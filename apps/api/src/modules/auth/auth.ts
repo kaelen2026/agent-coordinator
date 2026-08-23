@@ -5,7 +5,7 @@ import { CLIENT_IP_HEADER } from "../../shared/client-ip.js";
 import type { Db } from "../../shared/db.js";
 import { createAuthLogger } from "./logger.js";
 import * as schema from "./schema.js";
-import type { SessionUser } from "./service.js";
+import type { ReadSession, SessionUser } from "./service.js";
 
 /** better-auth 的挂载前缀。是对外契约的一部分，不随环境变化，所以是常量不是配置项。 */
 export const AUTH_BASE_PATH = "/api/auth";
@@ -20,6 +20,15 @@ export type AuthGateway = {
     getSession: (options: { headers: Headers }) => Promise<{ user: SessionUser } | null>;
   };
 };
+
+/**
+ * 把 gateway 收窄成 service 需要的最小读会话能力。受保护路由（本模块的 /api/me、其它模块
+ * 的自有端点）都用它拿 `requireAuth` 需要的读会话函数，认证入口因此只有一个。
+ */
+export const readSessionFrom =
+  (auth: AuthGateway): ReadSession =>
+  (headers) =>
+    auth.api.getSession({ headers });
 
 /** 本模块自己需要的配置形状，不直接吃全局 AppConfig，免得模块跟着全局配置漂移。 */
 export type AuthConfig = {
