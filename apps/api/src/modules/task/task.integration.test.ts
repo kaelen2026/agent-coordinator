@@ -417,8 +417,10 @@ describe("CSRF on POST /api/tasks", () => {
   });
 
   it("allows_a_native_client_that_carries_both_a_cookie_and_a_bearer_token", async () => {
-    // 第七格 —— iOS 的真实形态，不是假想：better-auth 的 sign-in 响应除了 `set-auth-token`
-    // 也下发会话 cookie，默认 URLSession（httpShouldSetCookies + 共享 jar）会把它收进去，
+    // 第七格 —— iOS 的真实形态：better-auth 的 sign-in 响应除了 `set-auth-token` 也下发
+    // 会话 cookie（这半句本套件自己验过：signUpUser 取到的 cookie 能换 /api/me 200），而
+    // "默认 URLSession（httpShouldSetCookies + 共享 jar）会把它收进去"这半句是按 Apple 文档
+    // **推断的、本仓库未实测**（口径同 packages/contracts 第 4 节）。推断若成立，
     // 之后每个请求**同时**带 Authorization 与 Cookie，于是必然走进 Origin 校验分支，
     // 不走"不带 cookie 就跳过"那条。契约要求 iOS 固定发 `Origin: <api 自身的源>`，
     // 而那个值不在 AUTH_TRUSTED_ORIGINS 里（.env.example 还明确要求 iOS 别往里加东西），

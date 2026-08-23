@@ -49,8 +49,10 @@ const toOriginSet = (entries: string[]): Set<string> =>
  *   - `Origin` 由浏览器控制，跨站页面**无法**把它伪造成 api 自己的源；
  *   - 非浏览器调用方能伪造任何 Origin，但它同样可以干脆不发 cookie——CSRF 防的是"浏览器
  *     自动附带凭证"，不是"有人能构造请求"。放宽与不放宽对它没有区别。
- *   而漏掉这一条的代价是实打实的：iOS 会**同时**带 cookie 和 bearer（better-auth 的 sign-in
- *   响应也下发会话 cookie，默认 URLSession 会收进 jar），因此必然走进本校验；契约要求它固定
+ *   而漏掉这一条的代价是实打实的：iOS 会**同时**带 cookie 和 bearer——better-auth 的 sign-in
+ *   响应也下发会话 cookie（这半句**有测试**：集成测试从 sign-in 响应里取出 cookie 就能换到
+ *   `/api/me` 200），而"默认 URLSession 会把它收进 jar"这半句是按 Apple 文档**推断的，本仓库
+ *   未实测**（与 packages/contracts 第 4 节里 URLSession 那几条同等待遇）。因此必然走进本校验；契约要求它固定
  *   发 `Origin: <api 自身的源>`，而那个值不在 `AUTH_TRUSTED_ORIGINS` 里（那份清单同时是 CORS
  *   白名单，为了 iOS 往里加东西等于放宽浏览器侧的信任边界）。不信任自身源 = iOS 全部写操作
  *   403，而客户端不可热修。

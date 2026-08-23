@@ -58,9 +58,11 @@ describe("task cursor", () => {
   });
 
   it("rejects_a_calendar_impossibility_that_the_schema_layer_already_catches", () => {
-    // 归属写在名字里：挡下它的是 payloadSchema 的 `.datetime()`（zod 3.25.76 实测会拒），
-    // **不是**下面那两条精度用例所约束的 ISO 往返检查。留着它是为了钉住"日历非法值进不来"
-    // 这个对外行为——哪天 zod 放宽了或换掉校验，这条会先红。
+    // 这条只钉住"日历非法值进不来"这个**结果**，钉不住是哪一层拒的：schema 层的
+    // `.datetime()`（zod 3.25.76 实测会拒）与下面精度用例所约束的 ISO 往返检查**两层都会**
+    // 挡下它。实测过：把 payloadSchema 的 `.datetime()` 弱化成 `z.string().min(1)`，
+    // cursor + service 的 30 条测试全绿——所以别指望它能在 zod 放宽校验时先红。
+    // 也不要为区分层级去加断言，那会把测试绑到内部实现上。
     expectRejected(Buffer.from("2026-02-31T10:00:00.000Z|task-1", "utf8").toString("base64url"));
   });
 
