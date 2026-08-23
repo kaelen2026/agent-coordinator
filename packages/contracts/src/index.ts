@@ -72,10 +72,26 @@ export type MeResponse = z.infer<typeof meResponseSchema>;
 // 但 axios 这类按 content-type 决定解析方式的客户端会拿到字符串，需要自己再 parse。
 //
 // 自有端点（`apiErrorSchema`）对照：
+// | 参数/请求体校验失败      | 400    | VALIDATION_ERROR                        | —                   |
 // | 未登录                   | 401    | UNAUTHENTICATED                         | —                   |
-// | 限流                     | 429    | RATE_LIMITED                            | `Retry-After: 60`   |
-// | 请求体过大               | 413    | PAYLOAD_TOO_LARGE                       | —                   |
+// | 带 cookie 但 Origin 不可信| 403   | INVALID_ORIGIN                          | —                   |
 // | 路由不存在               | 404    | NOT_FOUND                               | —                   |
+// | 请求体过大               | 413    | PAYLOAD_TOO_LARGE                       | —                   |
+// | 限流                     | 429    | RATE_LIMITED                            | `Retry-After: 60`   |
+//
+// ⚠️ **自有端点的 403 与 `/api/auth/*` 的 403 语义不同，别共用同一套客户端判断**
+// （两侧都由 apps/api 的集成测试逐格钉住）：
+//   - 触发条件：自有端点**只在请求带 `Cookie` 头时**才校验 Origin。不带 cookie 的 bearer
+//     请求（iOS）一律跳过——CSRF 的前提是浏览器**自动附带**凭证，而只有 cookie 会被自动
+//     附带；攻击者的跨站页面拿不到 `Authorization` 头，所以"bearer + 恶意 Origin"那一格
+//     根本没有凭证，结果只会是 401。`/api/auth/*` 的 sign-in / sign-up 则在"带了 Origin /
+//     `Referer` / `Sec-Fetch-*`"时也会强制校验（见上面第 4 节），差异是有意的。
+//   - 自有端点把"缺 Origin"与"Origin 不可信"合成同一个 `INVALID_ORIGIN`，**没有**
+//     `MISSING_OR_NULL_ORIGIN` 这一格。
+//   - 只作用于状态改变方法（POST/PUT/PATCH/DELETE）；GET 一律不受影响。
+//   - 响应体不回显收到的 Origin 值（不把外部输入反射进响应）。
+//   - 优先级：Origin 校验排在认证**之前**——"带 cookie + 不可信 Origin + 会话已失效"
+//     拿到的是 403，不是 401。
 //
 // 两个 Retry-After 头都在 CORS 的 `Access-Control-Expose-Headers` 里，浏览器读得到。
 //
@@ -278,3 +294,63 @@ export const SESSION_TOKEN_HEADER = "set-auth-token";
 
 /** 按契约拼出 `Authorization` 头的值。token 原样带上，不做任何编码。 */
 export const bearerAuthorization = (token: string): string => `Bearer ${token}`;
+
+// ── 任务 ────────────────────────────────────────────────────────────────────
+//
+// 对外暴露的任务字段白名单。**不含 `updatedAt`**：本切片没有任何更新路径，它恒等于
+// `createdAt`，放进响应等于承诺一个还不存在的语义（数据库列照建，只是不出现在契约里）。
+// **不含 `status`**：本切片没有生命周期，单值枚举是为"将来可能"引入的抽象
+// （architecture.md 简单优先）；状态随派发切片一起加，届时是纯增量。
+//
+// `id` 是不透明字符串：当前实现是 UUID，客户端不得解析、不得据此推断顺序或存在性。
+export const taskSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+
+export type Task = z.infer<typeof taskSchema>;
+
+// `POST /api/tasks` 请求体。两个字段都先 trim 再校验长度，所以纯空白的 title 会被拒。
+// `description` 是 nullish（可缺失、可为 null）：**空串、纯空白与缺失一律被服务端规范化
+// 为 null**，客户端不需要自己判空，也不该期待把空串原样读回来。
+export const createTaskRequestSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).nullish(),
+});
+
+export type CreateTaskRequest = z.infer<typeof createTaskRequestSchema>;
+
+// 201 响应。**不带 `Location` 头**：本切片不提供 `GET /api/tasks/{id}`，指向必然 404 的
+// Location 比不给更糟，而为了让 Location 成立去加一个没有任何客户端消费的详情端点就是死代码。
+// 创建结果已经在响应体里，客户端不需要再取一次。切片 2 加详情端点时补 Location，属纯增量。
+//
+// ⚠️ **不支持 `Idempotency-Key`（显式缺口，不是漏了）**：重放会创建第二条任务。因此
+// **客户端不得对 POST 的超时/网络失败做自动重试**，只能由用户显式重试。补齐时机：任务派发
+// 引入外部副作用那一刀一并做；届时新增该请求头是非破坏性增量。
+export const createTaskResponseSchema = z.object({
+  task: taskSchema,
+});
+
+export type CreateTaskResponse = z.infer<typeof createTaskResponseSchema>;
+
+// `GET /api/tasks` 的 200 响应。列表只含**调用者自己**的任务（归属过滤在服务端 service 层）。
+//
+// 排序恒为 `createdAt DESC, id DESC`——同一时间戳并列时由 id 决胜，保证翻页不重不漏。
+//
+// 分页参数：`limit`（整数 1..100，默认 20）、`cursor`（原样回传 `nextCursor`）。
+//
+// ⚠️ **`cursor` 是不透明的**：它编码了 `(createdAt, id)`，但格式不是契约的一部分，服务端可
+// 随时换实现。客户端只能把 `nextCursor` 原样回传，**禁止解析、禁止自行构造、禁止用它做
+// "跳到第 N 页"**；解不开的 cursor 是 400 `VALIDATION_ERROR`，不是空列表。
+//
+// `nextCursor` **字段恒在**：没有下一页时它是 `null`（不是缺失、不是空串）。判"还有下一页"
+// 只看它是不是 null，不要靠 `tasks.length === limit` 猜——服务端多取一条来判定，因此最后
+// 一页即使刚好装满 limit 也会返回 `null`。
+export const taskListResponseSchema = z.object({
+  tasks: z.array(taskSchema),
+  nextCursor: z.string().nullable(),
+});
+
+export type TaskListResponse = z.infer<typeof taskListResponseSchema>;

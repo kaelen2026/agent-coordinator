@@ -2,6 +2,7 @@ import { apiErrorSchema, healthResponseSchema } from "@agent-coordinator/contrac
 import { describe, expect, it } from "vitest";
 import { type AppDeps, createApp } from "./app.js";
 import type { AuthGateway } from "./modules/auth/index.js";
+import type { TaskDeps } from "./modules/task/index.js";
 import { CLIENT_IP_HEADER } from "./shared/client-ip.js";
 import type { RateLimiter, RateLimitRule } from "./shared/rate-limit.js";
 
@@ -27,9 +28,24 @@ const countingLimiter = (): { limiter: RateLimiter; keys: string[] } => {
   return { limiter, keys };
 };
 
+/**
+ * 本文件只测组装层（限流、CORS、体积上限），任何用例都不该真的落到任务存储上——
+ * 所以 repo 直接抛，一旦谁不小心让请求穿透到这里，测试会红而不是静默通过。
+ * 真正的任务行为在 modules/task/task.integration.test.ts 打真库。
+ */
+const unusedTasks: TaskDeps = {
+  repo: {
+    insert: () => Promise.reject(new Error("task repo must not be reached in app-level tests")),
+    listByOwner: () =>
+      Promise.reject(new Error("task repo must not be reached in app-level tests")),
+  },
+  newId: () => "unused",
+};
+
 const makeApp = (overrides: Partial<AppDeps> = {}) =>
   createApp({
     auth: anonymousAuth,
+    tasks: unusedTasks,
     rateLimiter: countingLimiter().limiter,
     rateLimit: GENEROUS,
     allowedOrigins: [ALLOWED_ORIGIN],

@@ -1,15 +1,23 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
-import { type AuthGateway, createAuthRoutes } from "./modules/auth/index.js";
+import {
+  AUTH_BASE_PATH,
+  type AuthGateway,
+  createAuthRoutes,
+  readSessionFrom,
+} from "./modules/auth/index.js";
 import { healthRoutes } from "./modules/health/index.js";
+import { createTaskRoutes, type TaskDeps } from "./modules/task/index.js";
 import { clientIpMiddleware } from "./shared/client-ip.js";
+import { csrfMiddleware } from "./shared/csrf.js";
 import { AppError, onError, onNotFound } from "./shared/errors.js";
 import { type RateLimiter, type RateLimitRule, rateLimitMiddleware } from "./shared/rate-limit.js";
 
 // 依赖在进程入口构造后注入，组装层不 new 任何东西——否则测试无法替换。
 export type AppDeps = {
   auth: AuthGateway;
+  tasks: TaskDeps;
   rateLimiter: RateLimiter;
   rateLimit: RateLimitRule;
   allowedOrigins: string[];
@@ -67,6 +75,23 @@ export const createApp = (deps: AppDeps) => {
     }),
   );
 
+  // 自有状态改变端点的 CSRF 防线：带 cookie 的写请求必须来自可信源（分流理由见 shared/csrf.ts）。
+  //
+  // 全局挂载而不是逐个路由挂：security.md 要求默认拒绝——"新模块忘了加"不能是豁免理由，
+  // 所以新写接口天然被覆盖，需要例外的反而要显式写进 isExempt。
+  // 排在限流之后：Origin 校验不落库，让它挡在限流前面等于给攻击者一条免限流的路径。
+  //
+  // `/api/auth/*` 例外：better-auth 自己那套 origin 校验更严且**错误码不同**
+  // （MISSING_OR_NULL_ORIGIN / CROSS_SITE_NAVIGATION_LOGIN_BLOCKED，见 packages/contracts）。
+  // 两层都拦会把它的契约盖成我们的 INVALID_ORIGIN，等于悄悄改了已发布的认证契约。
+  app.use(
+    "*",
+    csrfMiddleware({
+      trustedOrigins: deps.allowedOrigins,
+      isExempt: (path) => path.startsWith(`${AUTH_BASE_PATH}/`),
+    }),
+  );
+
   // 全局请求体上限（覆盖 /api/auth/* 在内的所有路由）
   app.use(
     "*",
@@ -80,6 +105,8 @@ export const createApp = (deps: AppDeps) => {
 
   app.route("/", healthRoutes);
   app.route("/", createAuthRoutes(deps.auth));
+  // 认证能力从 auth 模块的公开入口取，task 模块不自己读会话（跨模块只走公开接口）
+  app.route("/", createTaskRoutes({ ...deps.tasks, readSession: readSessionFrom(deps.auth) }));
 
   return app;
 };
