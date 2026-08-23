@@ -3,42 +3,48 @@ import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 // 不查 auth 的任何表——用户数据一律走 auth 模块的公开 service。
 import { userTable } from "../auth/index.js";
 
-// 查询路径 → 索引（database-design 步骤 1/3）。本切片只有一条：
-//   按 userId 取自己的任务，按 (createdAt, id) 倒序 keyset 翻页 → task_userId_createdAt_id_idx
-// 没有别的读路径，所以不建别的索引（每个索引都是写入成本）。
+// ⚠️ **列名 snake_case，TS 属性名 camelCase**。这不是随手选的，两侧的差异有来源：
+// auth 那几张表（user / session / account…）的列名是 camelCase，唯一原因是 better-auth
+// 按字段名读写、我们没得选；**自有表一律跟 Postgres 惯例走 snake_case**，先例与完整理由见
+// `src/shared/rate-limit.schema.ts` 顶部那段注释。task 是自有表，没有任何东西逼它 camelCase，
+// 所以别照着隔壁 auth/schema.ts 抄命名。
+// 对外契约不受影响：JSON 字段名仍是 `createdAt` 等 camelCase（见 packages/contracts），
+// 列名客户端看不到。
 //
-// 列名用 camelCase 而不是 shared/rate-limit.schema.ts 那种 snake_case：本表的 userId 是指向
-// better-auth 那几张 camelCase 表的外键，与外键目标对齐比与另一张自有表对齐更不容易看错。
-// 这是切片契约 §5 定的（DDL 与索引名逐字给出），不是随手选的。
-const createdAt = timestamp("createdAt", { withTimezone: true }).notNull().defaultNow();
-const updatedAt = timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow();
+// 查询路径 → 索引（database-design 步骤 1/3）。本切片只有一条：
+//   按 user_id 取自己的任务，按 (created_at, id) 倒序 keyset 翻页
+//   → task_user_id_created_at_id_idx
+// 没有别的读路径，所以不建别的索引（每个索引都是写入成本）。
+const createdAt = timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
+const updatedAt = timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
 
 export const task = pgTable(
   "task",
   {
     id: text("id").primaryKey(),
     // 归属列。on delete cascade：用户注销时任务一起走，不留孤儿行
-    userId: text("userId")
+    userId: text("user_id")
       .notNull()
       .references(() => userTable.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     description: text("description"),
     createdAt,
-    // 本切片没有任何更新路径，所以 updatedAt 恒等于 createdAt，也**不出现在对外契约里**
-    // （见 packages/contracts 的说明）。列先建好，等状态/编辑切片来用。
+    // 本切片没有任何更新路径，所以 updated_at 恒等于 created_at，也**不出现在对外契约里**
+    // （见 packages/contracts 的说明）。列先建好，等状态/编辑切片来用；那个切片必须自己负责
+    // 维护这一列（应用层写或加触发器），别假设它已经是"最后修改时间"。
     updatedAt,
   },
   (table) => [
-    // 排序方向写进索引，ORDER BY createdAt DESC, id DESC 才能直接走索引正扫、不带 Sort 节点
+    // 排序方向写进索引，ORDER BY created_at DESC, id DESC 才能直接走索引正扫、不带 Sort 节点
     // （keyset 翻页的每一页都走这条路径）。
     //
     // ⚠️ `nullsFirst()` 不是可省的装饰：drizzle 的 `.desc()` 默认生成 `DESC NULLS LAST`，
     // 而 Postgres 里 `ORDER BY x DESC` 的隐含含义是 `DESC NULLS FIRST`。两者不一致时索引
-    // **无法满足排序**——planner 照样会按 userId 用上这个索引，然后在它上面再加一个 Sort，
+    // **无法满足排序**——planner 照样会按 user_id 用上这个索引，然后在它上面再加一个 Sort，
     // 把该用户的全部任务排一遍才取 21 行（实测 40k 行：不加 nullsFirst 是
     // `Limit -> Sort -> Bitmap Heap Scan`，cost 5828；加了是干净的 `Index Scan`，cost 4.74）。
     // 两列都是 NOT NULL，所以改的只是排序声明，语义完全不变。
-    index("task_userId_createdAt_id_idx").on(
+    index("task_user_id_created_at_id_idx").on(
       table.userId,
       table.createdAt.desc().nullsFirst(),
       table.id.desc().nullsFirst(),

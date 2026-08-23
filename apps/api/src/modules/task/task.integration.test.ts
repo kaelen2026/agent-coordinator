@@ -594,7 +594,7 @@ describe("the list query is served by the index", () => {
 
     const plan = await explainListQuery(owner.userId, null);
 
-    expect(plan).toContain("task_userId_createdAt_id_idx");
+    expect(plan).toContain("task_user_id_created_at_id_idx");
     // Sort 节点出现就意味着索引的排序声明与 ORDER BY 不匹配（NULLS FIRST/LAST 是最常见的
     // 原因），代价是每翻一页都要把该用户的全部任务排一遍。
     expect(plan).not.toContain("Sort");
@@ -609,7 +609,7 @@ describe("the list query is served by the index", () => {
       id: created.id,
     });
 
-    expect(plan).toContain("task_userId_createdAt_id_idx");
+    expect(plan).toContain("task_user_id_created_at_id_idx");
     expect(plan).not.toContain("Sort");
   });
 });

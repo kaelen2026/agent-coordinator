@@ -1,5 +1,5 @@
 {
-  "id": "06c032e1-0351-4e1c-9734-de23be82b014",
+  "id": "652d8d90-5acc-4e1b-8702-6cda2e69804c",
   "prevId": "ce680941-e5fb-4519-b5b6-3f51432ce69e",
   "version": "7",
   "dialect": "postgresql",
@@ -429,8 +429,8 @@
           "primaryKey": true,
           "notNull": true
         },
-        "userId": {
-          "name": "userId",
+        "user_id": {
+          "name": "user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -447,15 +447,15 @@
           "primaryKey": false,
           "notNull": false
         },
-        "createdAt": {
-          "name": "createdAt",
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
-        "updatedAt": {
-          "name": "updatedAt",
+        "updated_at": {
+          "name": "updated_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
@@ -463,17 +463,17 @@
         }
       },
       "indexes": {
-        "task_userId_createdAt_id_idx": {
-          "name": "task_userId_createdAt_id_idx",
+        "task_user_id_created_at_id_idx": {
+          "name": "task_user_id_created_at_id_idx",
           "columns": [
             {
-              "expression": "userId",
+              "expression": "user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "createdAt",
+              "expression": "created_at",
               "isExpression": false,
               "asc": false,
               "nulls": "first"
@@ -492,11 +492,11 @@
         }
       },
       "foreignKeys": {
-        "task_userId_user_id_fk": {
-          "name": "task_userId_user_id_fk",
+        "task_user_id_user_id_fk": {
+          "name": "task_user_id_user_id_fk",
           "tableFrom": "task",
           "tableTo": "user",
-          "columnsFrom": ["userId"],
+          "columnsFrom": ["user_id"],
           "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
