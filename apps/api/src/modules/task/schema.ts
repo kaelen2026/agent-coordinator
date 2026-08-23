@@ -15,8 +15,33 @@ import { userTable } from "../auth/index.js";
 //   按 user_id 取自己的任务，按 (created_at, id) 倒序 keyset 翻页
 //   → task_user_id_created_at_id_idx
 // 没有别的读路径，所以不建别的索引（每个索引都是写入成本）。
-const createdAt = timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
-const updatedAt = timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
+// ⚠️ **精度必须是毫秒（`timestamptz(3)`），不能用默认的微秒**，这是正确性问题不是存储优化：
+// 游标编码走 `Date.toISOString()`，只有毫秒、而且是**截断**不是四舍五入。列比游标精确时，
+// 同一毫秒内的两条记录会让 keyset 上界被截到 `.xxx000`，真实值大于它的那条在之后**任何一页
+// 都不会再出现**——永久漏记录，而且没有任何报错。
+// 实测（列为微秒时）：6 条时间戳落在 3 个毫秒里的任务，limit=1 翻完全部页面只走到 3 条。
+//
+// 选毫秒列而不是让游标走全精度：`Date` 往返无损，索引与 keyset 谓词一个字都不用改。代价是
+// 同毫秒创建的两条不再有亚毫秒先后、由 `id` 决胜——分页正确性只要求两侧对**同一个全序**达成
+// 一致，任务列表不需要亚毫秒的创建时间分辨率。
+// 由 task.integration.test.ts 的 stores_created_at_at_millisecond_precision_so_a_cursor_can
+// _address_it_exactly（钉列本身）与 walks_every_row_exactly_once_when_timestamps_carry_sub
+// _millisecond_precision（钉行为）两条守住。
+const MILLISECOND_PRECISION = 3;
+
+const createdAt = timestamp("created_at", {
+  withTimezone: true,
+  precision: MILLISECOND_PRECISION,
+})
+  .notNull()
+  .defaultNow();
+// updated_at 跟着一起改精度：两列语义同源，留一个微秒一个毫秒只会让下一个人以为有讲究
+const updatedAt = timestamp("updated_at", {
+  withTimezone: true,
+  precision: MILLISECOND_PRECISION,
+})
+  .notNull()
+  .defaultNow();
 
 export const task = pgTable(
   "task",

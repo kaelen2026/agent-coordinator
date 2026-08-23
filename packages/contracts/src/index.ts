@@ -86,6 +86,18 @@ export type MeResponse = z.infer<typeof meResponseSchema>;
 //     附带；攻击者的跨站页面拿不到 `Authorization` 头，所以"bearer + 恶意 Origin"那一格
 //     根本没有凭证，结果只会是 401。`/api/auth/*` 的 sign-in / sign-up 则在"带了 Origin /
 //     `Referer` / `Sec-Fetch-*`"时也会强制校验（见上面第 4 节），差异是有意的。
+//   - **可信集合 = `AUTH_TRUSTED_ORIGINS` ∪ {api 自身的源（`BETTER_AUTH_URL` 的
+//     scheme+host+port）}**，与 better-auth 的 `getTrustedOrigins` 一致。所以第 4 节 ✅ 那条
+//     建议（iOS 固定发 `Origin: <api 源>`）在自有端点上同样成立，**iOS 不需要往
+//     `AUTH_TRUSTED_ORIGINS` 里加任何东西**。比对是逐字的序列化源：只差端口
+//     （`http://localhost:3002`）或只差 scheme（`https://localhost:3001`）都不可信。
+//   - ⚠️ **原生客户端会同时带 cookie 和 bearer**：better-auth 的 sign-in 响应除了
+//     `set-auth-token` 也下发会话 cookie，默认 `URLSession`（`httpShouldSetCookies` +
+//     共享 `HTTPCookieStorage`）会把它收进 jar。于是 iOS 的每个写请求都**走 Origin 校验分支**，
+//     不走"不带 cookie 就跳过"那条——这正是上一条必须成立的原因。
+//     （服务端这一侧有测试钉住；"iOS 默认会收 cookie"这一半是按 Apple 文档推断、**本仓库未实测**，
+//     与本文件 `URLSession` 那几条同等待遇。但结论不依赖这个推断：带不带 cookie 都通得过，
+//     iOS 也不需要为此关掉 cookie jar。）
 //   - 自有端点把"缺 Origin"与"Origin 不可信"合成同一个 `INVALID_ORIGIN`，**没有**
 //     `MISSING_OR_NULL_ORIGIN` 这一格。
 //   - 只作用于状态改变方法（POST/PUT/PATCH/DELETE）；GET 一律不受影响。

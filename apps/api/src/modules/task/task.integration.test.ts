@@ -8,7 +8,7 @@ import {
   type Task,
   taskListResponseSchema,
 } from "@agent-coordinator/contracts";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -39,6 +39,7 @@ const makeApp = (overrides: Partial<AppDeps> = {}) =>
     // 默认放宽限流，让这些用例聚焦任务行为；429 由下面专门的分组用收紧的额度测
     rateLimit: { windowSeconds: 60, max: 10_000 },
     allowedOrigins: config.auth.trustedOrigins,
+    apiBaseUrl: config.auth.baseUrl,
     trustedProxies: [],
     maxBodyBytes: config.http.maxBodyBytes,
     ...overrides,
@@ -415,6 +416,42 @@ describe("CSRF on POST /api/tasks", () => {
     expect(res.status).toBe(201);
   });
 
+  it("allows_a_native_client_that_carries_both_a_cookie_and_a_bearer_token", async () => {
+    // 第七格 —— iOS 的真实形态，不是假想：better-auth 的 sign-in 响应除了 `set-auth-token`
+    // 也下发会话 cookie，默认 URLSession（httpShouldSetCookies + 共享 jar）会把它收进去，
+    // 之后每个请求**同时**带 Authorization 与 Cookie，于是必然走进 Origin 校验分支，
+    // 不走"不带 cookie 就跳过"那条。契约要求 iOS 固定发 `Origin: <api 自身的源>`，
+    // 而那个值不在 AUTH_TRUSTED_ORIGINS 里（.env.example 还明确要求 iOS 别往里加东西），
+    // 所以可信集合必须像 better-auth 的 getTrustedOrigins 那样恒含 api 自身的源。
+    // 不通过的代价：iOS 全部写操作 403，而客户端不可热修。
+    const owner = await signUpUser();
+
+    const res = await postJson(
+      "/api/tasks",
+      { title: "from ios" },
+      {
+        cookie: owner.cookie,
+        bearer: owner.token,
+        origin: new URL(config.auth.baseUrl).origin,
+      },
+    );
+
+    expect(res.status).toBe(201);
+  });
+
+  it("rejects_a_cookie_request_from_an_untrusted_origin_before_checking_the_session", async () => {
+    // Origin 校验排在认证之前：垃圾 cookie（没有任何有效会话）+ 不可信 Origin 拿到的是 403，
+    // 不是 401。把 csrfMiddleware 从全局挪到 requireAuth 之后（看着像"只保护要认证的写接口"
+    // 的合理重构）就会把它变成 401，客户端于是走重登录流程而不是报"来源不可信"。
+    const res = await postJson(
+      "/api/tasks",
+      { title: "forged" },
+      { cookie: "better-auth.session_token=not-a-real-session", origin: UNTRUSTED_ORIGIN },
+    );
+
+    await expectApiError(res, 403, "INVALID_ORIGIN");
+  });
+
   it("leaves_the_list_endpoint_alone_even_with_a_cookie_and_an_untrusted_origin", async () => {
     const owner = await signUpUser();
 
@@ -707,6 +744,86 @@ describe("cursor pagination", () => {
     const pages = await walkPages(owner, 2);
 
     expect(pages.map((page) => page.length)).toEqual([2, 2]);
+  });
+
+  /**
+   * 直接把 `created_at` 写成**带微秒**的值。整毫秒（`.xxx000`）恰好会屏蔽这个 bug，
+   * 所以这里必须用非整毫秒——参数化传值，不拼 SQL。
+   */
+  const setCreatedAtWithMicroseconds = async (id: string, value: string): Promise<void> => {
+    await db.execute(sql`update "task" set created_at = ${value}::timestamptz where id = ${id}`);
+  };
+
+  it("stores_created_at_at_millisecond_precision_so_a_cursor_can_address_it_exactly", async () => {
+    // 游标编码走 Date.toISOString()：只有毫秒，而且是**截断**不是四舍五入。列只要比游标精确，
+    // keyset 上界就会被截到 `.xxx000`，真实值大于它的那条在之后任何一页都不会再出现。
+    // 所以列精度必须与游标能表达的精度对齐——这条直接钉住列本身。
+    const owner = await signUpUser();
+    const created = await createTaskVia(owner);
+
+    await setCreatedAtWithMicroseconds(created.id, "2026-08-22T10:00:00.123456+00");
+    const stored = await db.execute(
+      sql`select to_char(created_at, 'US') as micros from "task" where id = ${created.id}`,
+    );
+
+    expect(stored.rows[0]).toMatchObject({ micros: "123000" });
+  });
+
+  it("walks_every_row_exactly_once_when_timestamps_carry_sub_millisecond_precision", async () => {
+    const owner = await signUpUser();
+    const created: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      created.push((await createTaskVia(owner, { title: `micros ${i}` })).id);
+    }
+
+    // 三组"同一毫秒内的两条"。配 limit=1 时每一行都是页边界，所以每组里**较小的那条**都落在
+    // 「大于被截断的上界、又小于边界行」的缝里——列若是微秒精度，这三条在之后任何一页都不会
+    // 再出现。注意不能用整毫秒（.xxx000）构造：那恰好让截断无损，会把这个 bug 屏蔽掉。
+    const micros = [
+      "2026-08-22T10:00:00.123900+00",
+      "2026-08-22T10:00:00.123100+00",
+      "2026-08-22T10:00:00.122900+00",
+      "2026-08-22T10:00:00.122100+00",
+      "2026-08-22T10:00:00.121900+00",
+      "2026-08-22T10:00:00.121100+00",
+    ];
+    for (const [i, value] of micros.entries()) {
+      const id = created[i];
+      if (id !== undefined) {
+        await setCreatedAtWithMicroseconds(id, value);
+      }
+    }
+
+    const walked = (await walkPages(owner, 1)).flat();
+
+    expect(walked).toHaveLength(created.length);
+    expect(new Set(walked)).toEqual(new Set(created));
+  });
+
+  it("walks_every_row_exactly_once_when_tasks_are_created_concurrently", async () => {
+    // 真实形态：同一用户并发建任务，时间戳由 defaultNow() 给、不做任何加工。
+    //
+    // ⚠️ 证据等级：这条是**冒烟**，不是上面那条的替代品。走完整 HTTP 栈时两条请求是否真的
+    // 落进同一毫秒取决于机器快慢，所以它在"列精度错了"的情况下**不保证变红**（实测就有过
+    // 全绿）；确定性的那条是上面显式写微秒的用例。修好之后这条恒绿：毫秒列 + id 决胜下，
+    // 并发建了多少条就该翻出多少条。
+    const owner = await signUpUser();
+    const responses = await Promise.all(
+      Array.from({ length: 12 }, (_unused, i) =>
+        postJson("/api/tasks", { title: `concurrent ${i}` }, { cookie: owner.cookie }),
+      ),
+    );
+    const created = await Promise.all(
+      responses.map(async (res) => {
+        expect(res.status).toBe(201);
+        return createTaskResponseSchema.parse(await res.json()).task.id;
+      }),
+    );
+
+    const walked = (await walkPages(owner, 1)).flat();
+
+    expect(walked).toHaveLength(created.length);
+    expect(new Set(walked)).toEqual(new Set(created));
   });
 
   it("returns_an_empty_final_page_rather_than_repeating_rows_when_a_cursor_is_replayed", async () => {

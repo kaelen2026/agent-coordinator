@@ -63,7 +63,14 @@ export const decodeTaskCursor = (raw: string): TaskCursor => {
     throw invalid();
   }
 
-  // zod 的 .datetime() 只看格式，"2026-02-31" 这种日历上不存在的日期照过。
+  // 只接受**我们自己发出去过的那种写法**：`Date.toISOString()` 的产物（`Z` 结尾、恒三位小数）。
+  // 这一步兜的是"合法 ISO 8601、但我们从不生成"的拼法——秒级精度（`…10:00:00Z`）、被截短的
+  // 小数位（`…00.0Z`）之类。它们能通过上面的 schema，`new Date()` 也认，但出现就说明这个游标
+  // 是客户端自己拼的，而拼游标是契约明令禁止的（格式不透明、服务端可随时换实现）。
+  //
+  // 顺带说明它**不**负责什么：日历上不存在的日期（`2026-02-31`）在当前依赖版本（zod 3.25.76）
+  // 下已经被上面 `.datetime()` 挡掉了，不是靠这一步——别读成"往返检查是为了兜住日历非法值"。
+  // `Number.isNaN` 那半同理，是纯防御。
   const createdAt = new Date(parsed.data.createdAt);
   if (Number.isNaN(createdAt.getTime()) || createdAt.toISOString() !== parsed.data.createdAt) {
     throw invalid();

@@ -4,6 +4,13 @@ import { AppError } from "./errors.js";
 export type CsrfOptions = {
   /** 可信源清单。复用 AUTH_TRUSTED_ORIGINS（同时也是 CORS 白名单），不新增环境变量。 */
   trustedOrigins: string[];
+  /**
+   * 本服务自己的地址（`BETTER_AUTH_URL`）。它的源**恒可信**，与上面那份清单取并集——
+   * 镜像 better-auth 的 `getTrustedOrigins`（它同样恒把 baseURL 的源并进信任清单）。
+   * 单独一个参数而不是让调用方自己拼进 trustedOrigins：这条规则不能被"改配置"改掉，
+   * 漏了它 iOS 的全部写操作就是 403（见下面 ⚠️）。
+   */
+  ownBaseUrl: string;
   /** 返回 true 的路径跳过本中间件（`/api/auth/*` 由 better-auth 自己校验）。 */
   isExempt?: (path: string) => boolean;
 };
@@ -37,9 +44,19 @@ const toOriginSet = (entries: string[]): Set<string> =>
  *
  * 缺 Origin 与 Origin 不可信合并为同一个 `INVALID_ORIGIN`：调用方能做的补救完全相同
  * （发一个可信的 Origin），分成两个 code 只是多一份要跨端维护的契约。
+ *
+ * ⚠️ **api 自身的源恒在可信集合里**（`ownBaseUrl`），这不是放宽：
+ *   - `Origin` 由浏览器控制，跨站页面**无法**把它伪造成 api 自己的源；
+ *   - 非浏览器调用方能伪造任何 Origin，但它同样可以干脆不发 cookie——CSRF 防的是"浏览器
+ *     自动附带凭证"，不是"有人能构造请求"。放宽与不放宽对它没有区别。
+ *   而漏掉这一条的代价是实打实的：iOS 会**同时**带 cookie 和 bearer（better-auth 的 sign-in
+ *   响应也下发会话 cookie，默认 URLSession 会收进 jar），因此必然走进本校验；契约要求它固定
+ *   发 `Origin: <api 自身的源>`，而那个值不在 `AUTH_TRUSTED_ORIGINS` 里（那份清单同时是 CORS
+ *   白名单，为了 iOS 往里加东西等于放宽浏览器侧的信任边界）。不信任自身源 = iOS 全部写操作
+ *   403，而客户端不可热修。
  */
-export const csrfMiddleware = ({ trustedOrigins, isExempt }: CsrfOptions) => {
-  const allowed = toOriginSet(trustedOrigins);
+export const csrfMiddleware = ({ trustedOrigins, ownBaseUrl, isExempt }: CsrfOptions) => {
+  const allowed = toOriginSet([...trustedOrigins, ownBaseUrl]);
 
   return createMiddleware(async (c, next) => {
     if (!STATE_CHANGING_METHODS.has(c.req.method) || isExempt?.(c.req.path) === true) {

@@ -7,6 +7,7 @@ import { CLIENT_IP_HEADER } from "./shared/client-ip.js";
 import type { RateLimiter, RateLimitRule } from "./shared/rate-limit.js";
 
 const ALLOWED_ORIGIN = "http://localhost:3000";
+const API_BASE_URL = "http://localhost:3001";
 const MAX_BODY_BYTES = 1024;
 const GENEROUS: RateLimitRule = { windowSeconds: 60, max: 1000 };
 
@@ -49,6 +50,7 @@ const makeApp = (overrides: Partial<AppDeps> = {}) =>
     rateLimiter: countingLimiter().limiter,
     rateLimit: GENEROUS,
     allowedOrigins: [ALLOWED_ORIGIN],
+    apiBaseUrl: API_BASE_URL,
     trustedProxies: [],
     maxBodyBytes: MAX_BODY_BYTES,
     ...overrides,

@@ -40,6 +40,7 @@ const app = createApp({
   }),
   rateLimit: config.rateLimit,
   allowedOrigins: config.auth.trustedOrigins,
+  apiBaseUrl: config.auth.baseUrl,
   trustedProxies: config.auth.trustedProxies,
   maxBodyBytes: config.http.maxBodyBytes,
 });

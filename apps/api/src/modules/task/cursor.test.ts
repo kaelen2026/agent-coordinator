@@ -57,7 +57,10 @@ describe("task cursor", () => {
     expectRejected(Buffer.from("yesterday|task-1", "utf8").toString("base64url"));
   });
 
-  it("rejects_a_payload_whose_timestamp_is_a_calendar_impossibility", () => {
+  it("rejects_a_calendar_impossibility_that_the_schema_layer_already_catches", () => {
+    // 归属写在名字里：挡下它的是 payloadSchema 的 `.datetime()`（zod 3.25.76 实测会拒），
+    // **不是**下面那两条精度用例所约束的 ISO 往返检查。留着它是为了钉住"日历非法值进不来"
+    // 这个对外行为——哪天 zod 放宽了或换掉校验，这条会先红。
     expectRejected(Buffer.from("2026-02-31T10:00:00.000Z|task-1", "utf8").toString("base64url"));
   });
 

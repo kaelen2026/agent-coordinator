@@ -9,13 +9,17 @@ import { onError } from "./errors.js";
 
 const TRUSTED = "http://localhost:3000";
 const UNTRUSTED = "http://evil.example.com";
+// api 自己的地址（= BETTER_AUTH_URL）。它的源恒可信，且**故意不出现在** trustedOrigins 里：
+// 这正是原生客户端的处境——契约要求 iOS 固定发这个源，而 AUTH_TRUSTED_ORIGINS 里没有它。
+const OWN_BASE_URL = "http://localhost:3001";
+const OWN_ORIGIN = "http://localhost:3001";
 const COOKIE = "better-auth.session_token=whatever";
 const TOKEN = "session-id.signature";
 
 const makeApp = (isExempt?: (path: string) => boolean) => {
   const app = new Hono();
   app.onError(onError);
-  app.use("*", csrfMiddleware({ trustedOrigins: [TRUSTED], isExempt }));
+  app.use("*", csrfMiddleware({ trustedOrigins: [TRUSTED], ownBaseUrl: OWN_BASE_URL, isExempt }));
   app.all("/api/things", (c) => c.json({ ok: true }));
   app.all("/api/auth/sign-in/email", (c) => c.json({ ok: true }));
   return app;
@@ -72,6 +76,14 @@ describe("csrf middleware", () => {
       expect((await call({ bearer: true, origin: UNTRUSTED })).status).toBe(200);
     });
 
+    it("allows_a_request_carrying_both_a_cookie_and_a_bearer_token_from_the_api_own_origin", async () => {
+      // 第七格 —— iOS 的真实形态。better-auth 的 sign-in 响应也下发会话 cookie，默认
+      // URLSession 会收进 jar，于是每个请求同时带 Authorization 与 Cookie、必然走进本校验；
+      // 契约要求它固定发 api 自身的源，而那个源不在 AUTH_TRUSTED_ORIGINS 里。
+      // 拦掉这一格 = iOS 全部写操作 403，而客户端不可热修。
+      expect((await call({ cookie: true, bearer: true, origin: OWN_ORIGIN })).status).toBe(200);
+    });
+
     it("leaves_reads_alone_even_with_a_cookie_and_an_untrusted_origin", async () => {
       // GET 无副作用，CSRF 打不出伤害；拦它只会让跨源读取莫名 403
       expect((await call({ method: "GET", cookie: true, origin: UNTRUSTED })).status).toBe(200);
@@ -112,12 +124,26 @@ describe("csrf middleware", () => {
       await expectRejected(await call({ cookie: true, origin: `${TRUSTED}.evil.example.com` }));
     });
 
+    it("trusts_the_api_own_origin_even_though_it_is_not_in_the_configured_allowlist", async () => {
+      // 镜像 better-auth 的 getTrustedOrigins：baseURL 的源恒可信，不用往环境变量里加。
+      // 这不是放宽——Origin 由浏览器控制，跨站页面伪造不出 api 自己的源；能伪造 Origin 的
+      // 非浏览器调用方同样可以干脆不发 cookie，拦它换不到任何东西。
+      expect((await call({ cookie: true, origin: OWN_ORIGIN })).status).toBe(200);
+    });
+
     it("rejects_an_origin_that_only_differs_in_scheme", async () => {
       await expectRejected(await call({ cookie: true, origin: "https://localhost:3000" }));
     });
 
     it("rejects_an_origin_that_only_differs_in_port", async () => {
-      await expectRejected(await call({ cookie: true, origin: "http://localhost:3001" }));
+      // 用 3002 而不是 3001：3001 是 api 自身的源、现在恒可信（见上一格）。
+      // "只差端口也不算同源"这条仍然要钉住——同一台机器上的另一个服务不是可信来源。
+      await expectRejected(await call({ cookie: true, origin: "http://localhost:3002" }));
+    });
+
+    it("rejects_the_api_own_host_over_a_different_scheme", async () => {
+      // 自身源同样是逐字比对，不是"host 对上就行"
+      await expectRejected(await call({ cookie: true, origin: "https://localhost:3001" }));
     });
 
     it("rejects_the_literal_null_origin_a_sandboxed_frame_sends", async () => {
@@ -129,7 +155,7 @@ describe("csrf middleware", () => {
       // 比较前必须归一化，否则一个尾斜杠就让整个 web 端 403
       const app = new Hono();
       app.onError(onError);
-      app.use("*", csrfMiddleware({ trustedOrigins: [`${TRUSTED}/`] }));
+      app.use("*", csrfMiddleware({ trustedOrigins: [`${TRUSTED}/`], ownBaseUrl: OWN_BASE_URL }));
       app.post("/api/things", (c) => c.json({ ok: true }));
 
       expect((await call({ cookie: true, origin: TRUSTED }, app)).status).toBe(200);

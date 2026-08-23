@@ -21,6 +21,8 @@ export type AppDeps = {
   rateLimiter: RateLimiter;
   rateLimit: RateLimitRule;
   allowedOrigins: string[];
+  /** 本服务自己的地址（BETTER_AUTH_URL）。它的源恒是 CSRF 可信源，理由见 shared/csrf.ts。 */
+  apiBaseUrl: string;
   trustedProxies: string[];
   maxBodyBytes: number;
 };
@@ -88,6 +90,9 @@ export const createApp = (deps: AppDeps) => {
     "*",
     csrfMiddleware({
       trustedOrigins: deps.allowedOrigins,
+      // 自身源恒可信（镜像 better-auth 的 getTrustedOrigins）。**不要**把它并进
+      // allowedOrigins：那份清单是 CORS 白名单，多一项就是浏览器侧多一个可信源。
+      ownBaseUrl: deps.apiBaseUrl,
       isExempt: (path) => path.startsWith(`${AUTH_BASE_PATH}/`),
     }),
   );

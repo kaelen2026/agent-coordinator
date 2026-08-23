@@ -40,6 +40,7 @@ const makeApp = (overrides: Partial<AppDeps> = {}) =>
     rateLimiter,
     rateLimit: { windowSeconds: 60, max: 10_000 },
     allowedOrigins: config.auth.trustedOrigins,
+    apiBaseUrl: config.auth.baseUrl,
     trustedProxies: [],
     maxBodyBytes: config.http.maxBodyBytes,
     ...overrides,
